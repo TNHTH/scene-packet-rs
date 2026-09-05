@@ -10,7 +10,7 @@
 | E 盘外置工具链（ffmpeg、yt-dlp、whisper、模型） | 完成 |
 | GPU Whisper（RTX 4060 + cuBLAS DLL） | 完成 |
 | 抖音 URL 端到端 analyze（615s 无字幕 → ASR） | 完成 |
-| 私有 GitHub 仓库发布 | 见下文执行记录 |
+| 私有 GitHub 仓库发布 | 完成 |
 
 验收样例：`https://v.douyin.com/K4wMq-kGog4/` → `video_id=7674972844204100209`，duration=615s，source=asr。
 
@@ -46,10 +46,23 @@ git init -b main
 git add .
 git status
 git commit -m "feat: AI Video Reader v2 初始交付"
-gh repo create ai-video-reader-rs --private --source=. --remote=origin --push
+gh repo create ai-video-reader-rs --private --source=. --remote=origin
+# HTTPS 443 在本机超时，改用 SSH 推送：
+git remote set-url origin git@github.com:TNHTH/ai-video-reader-rs.git
+git push -u origin main
 ```
 
-执行结果见本地日志：`项目/.tmp/codex/2026-09-05/github-publish-log.md`（含 commit hash 与仓库 URL）。
+**结果摘要**
+
+| 项 | 值 |
+|----|-----|
+| 仓库 URL | https://github.com/TNHTH/ai-video-reader-rs |
+| 可见性 | PRIVATE |
+| 默认分支 | main |
+| HEAD commit | `9a27085` chore: 停止跟踪 dist 构建产物，减小仓库体积 |
+| 初始 commit | `f2c7928` feat: AI Video Reader v2 初始交付 |
+
+详细命令与 exit code 见本地日志：`项目/.tmp/codex/2026-09-05/github-publish-log.md`。
 
 ## 6. 后续 TODO
 
