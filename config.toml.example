@@ -1,0 +1,29 @@
+# 复制到数据根目录并重命名为 config.toml
+# 数据根默认：%APPDATA%\AIVideoReader\root.txt 指向的路径（如 E:/AIVideoReader）
+
+[extractor]
+name = "ytdlp"
+cookies_from_browser = "none"
+cookies_file = "E:/AIVideoReader/cookies/douyin.txt"
+# 必须与导出 Cookie 的浏览器 User-Agent 完全一致
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+[asr]
+default = "auto"
+active_preset = "whisper-cpp-cublas"
+model_path = "E:/models/ggml-large-v3-turbo.bin"
+
+[output]
+cache_dir = ""
+
+[tools]
+ffmpeg_path = "E:/ffmpeg/ffmpeg.exe"
+ffprobe_path = "E:/ffmpeg/ffprobe.exe"
+ytdlp_path = "E:/yt-dlp/yt-dlp.exe"
+whisper_cli_path = "E:/whisper/whisper-cli.exe"
+whisper_model_path = "E:/models/ggml-large-v3-turbo.bin"
+
+[ui]
+enable_transparency = true
+scene_threshold = 0.3
+visual_hint_limit = 50

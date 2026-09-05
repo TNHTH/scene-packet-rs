@@ -1,0 +1,40 @@
+[package]
+name = "avr"
+version.workspace = true
+edition.workspace = true
+description = "AI Video Reader - 单 exe 桌面/MCP/CLI"
+
+[[bin]]
+name = "avr"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+avr-core = { path = "../../crates/avr-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+window-vibrancy = "0.5"
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rmcp.workspace = true
+parking_lot.workspace = true
+schemars = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_System_Console",
+    "Win32_Foundation",
+] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

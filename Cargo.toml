@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = ["crates/avr-core", "desktop/src-tauri"]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["AI Video Reader"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+url = "2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+sha2 = "0.10"
+zip = "2"
+futures-util = "0.3"
+rmcp = { version = "0.3", features = ["server", "macros", "transport-io", "schemars"] }
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1
+strip = true
+# panic = unwind（默认），GUI 需要友好错误处理
