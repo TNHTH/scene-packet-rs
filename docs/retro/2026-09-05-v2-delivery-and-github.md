@@ -59,8 +59,8 @@ git push -u origin main
 | 仓库 URL | https://github.com/TNHTH/ai-video-reader-rs |
 | 可见性 | PRIVATE |
 | 默认分支 | main |
-| HEAD commit | `9a27085` chore: 停止跟踪 dist 构建产物，减小仓库体积 |
-| 初始 commit | `f2c7928` feat: AI Video Reader v2 初始交付 |
+| HEAD commit | `93b4492` docs: 补充 GitHub 发布结果与 SSH 推送说明 |
+| 初始交付 commit | `9a27085` / `f2c7928` |
 
 详细命令与 exit code 见本地日志：`项目/.tmp/codex/2026-09-05/github-publish-log.md`。
 
