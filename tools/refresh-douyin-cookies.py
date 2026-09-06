@@ -56,12 +56,27 @@ def merge_document_cookie(cookie_str: str, existing: Path) -> int:
     return updated
 
 
+def merge_ms_token(token: str, existing: Path = OUT) -> None:
+    """写入 msToken（来自 localStorage xmst 或浏览器导出）。"""
+    if not token.strip():
+        return
+    rows = parse_netscape(existing)
+    rows[(DOMAIN, "msToken")] = (DOMAIN, "TRUE", "/", "FALSE", EXPIRY, "msToken", token.strip())
+    write_netscape(existing, rows)
+
+
 def main() -> int:
     if len(sys.argv) < 2:
-        print("用法: python refresh-douyin-cookies.py \"document.cookie字符串\"", file=sys.stderr)
+        print(
+            "用法: python refresh-douyin-cookies.py \"document.cookie字符串\" [msToken]",
+            file=sys.stderr,
+        )
         return 1
     cookie_str = sys.argv[1]
     n = merge_document_cookie(cookie_str, OUT)
+    if len(sys.argv) >= 3:
+        merge_ms_token(sys.argv[2], OUT)
+        print(f"msToken updated")
     print(f"updated {n} cookies -> {OUT} (total {len(parse_netscape(OUT))})")
     return 0
 
