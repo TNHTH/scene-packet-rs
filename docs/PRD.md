@@ -1,4 +1,4 @@
-# PRD: AI Video Reader v2
+# PRD: ScenePacket v2
 
 generated: 2026-09-04
 

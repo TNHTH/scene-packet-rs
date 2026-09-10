@@ -68,7 +68,7 @@ pub fn run_mcp_config() -> i32 {
         .unwrap_or_else(|_| "avr".into());
     let json = serde_json::json!({
         "mcpServers": {
-            "ai-video-reader": {
+            "scene-packet": {
                 "command": exe,
                 "args": ["--mcp"]
             }

@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "avr", version, about = "AI Video Reader v2")]
+#[command(name = "avr", version, about = "ScenePacket - 视频上下文包")]
 struct Args {
     /// 启动 MCP stdio 服务
     #[arg(long)]

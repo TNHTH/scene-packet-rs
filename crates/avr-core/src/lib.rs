@@ -1,4 +1,4 @@
-//! AI Video Reader 核心库：视频文本提取、缓存、工具编排。
+//! ScenePacket 核心库：视频上下文提取、缓存、工具编排。
 
 pub mod asr;
 pub mod cache;

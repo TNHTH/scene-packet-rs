@@ -193,7 +193,7 @@ impl ServerHandler for AvrMcpServer {
             protocol_version: ProtocolVersion::default(),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
-                name: "ai-video-reader".into(),
+                name: "scene-packet".into(),
                 version: avr_core::VERSION.into(),
             },
             instructions: Some(

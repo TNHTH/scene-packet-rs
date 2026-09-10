@@ -1,6 +1,17 @@
-# AI Video Reader v2
+# ScenePacket
 
-单 `avr.exe`：无参数开 GUI、`--mcp` 启 MCP stdio、子命令走 CLI。
+把视频转换成可供智能体读取的上下文包。
+
+ScenePacket 从本地文件、B 站和抖音视频中提取带时间轴的字幕、语音转写、
+视觉线索、元数据和关键帧，并通过 GUI、CLI 和 MCP 提供给 Cursor、Codex 等工具使用。
+
+产品副标题：**Turn video into agent-ready context.**
+
+当前可执行文件仍叫 `avr.exe`，以兼容已有脚本和 MCP 配置；后续可在独立版本中提供
+`scenepacket.exe` 别名。
+
+建议 GitHub 仓库 slug 使用 `scene-packet-rs`。当前远端地址仍为
+`TNHTH/ai-video-reader-rs`，远端仓库重命名与 remote URL 同步需单独执行。
 
 ## 体积说明
 
@@ -42,6 +53,9 @@ cd desktop\ui && npm install && npm run build
 
 优先级：`AVR_DATA_ROOT` > exe 同目录 `avr.portable` > `%APPDATA%\AIVideoReader\root.txt`
 
+其中 `AIVideoReader` 是旧版本数据目录名，ScenePacket 会继续读取它，避免升级时丢失已有
+配置、模型和缓存；新安装仍可按本节路径规划使用。
+
 ```
 <DataRoot>/
 ├─ .avr-root
@@ -60,6 +74,31 @@ cd desktop\ui && npm install && npm run build
 - `extract_frames` — 截帧，默认 `delivery=path`
 
 接入 Cursor：运行 `avr mcp-config`，将 JSON 合并到 `.cursor/mcp.json`。
+
+## 竞品与参考项目
+
+下面的项目覆盖视频摘要、转写、关键帧、视觉参考和 Agent/MCP 接入等方向，可作为
+ScenePacket 后续产品设计和交互优化的参考。它们并非全部是直接竞品，定位以公开页面为准。
+
+| 项目 | 链接 | 公开定位 / 可借鉴方向 |
+|------|------|----------------------|
+| Video Ref / ai-video-transcript-keyframes | [GitHub](https://github.com/tanzeeldevAi/ai-video-transcript-keyframes) | 将视频转换为带时间戳 transcript 与带标签关键帧联系表，面向 Claude、ChatGPT、Cursor。 |
+| VideoContext App | [videocontext.app](https://videocontext.app) | 将屏幕录制转换为 AI-ready context；参考“录制→上下文”的产品表达。 |
+| Eightify | [eightify.app](https://eightify.app) | AI 视频摘要和关键观点提取。 |
+| Glasp YouTube Summary | [glasp.co/youtube-summary](https://glasp.co/youtube-summary) | YouTube 摘要、时间点和知识管理。 |
+| Recall | [recall.it](https://www.recall.it) | 视频总结与个人知识库。 |
+| FrameLore | [framelore.com](https://framelore.com) | AI 影视前期制作 / production intelligence 平台，强调视觉资产与决策上下文。 |
+| SceneWeaver | [sceneweaver.ai](https://www.sceneweaver.ai) | 竖屏剧创作平台；“场景编织”可参考其创作流程，但需注意同名项目较多。 |
+| VoxFrame | [GitHub](https://github.com/tayyabalitech/voxframe) | 多模态视频描述与叙事合成。 |
+| VidLedger | [GitHub](https://github.com/DNAMcKnight/vidledger) | 视频内容追踪和组织；可参考内容索引与溯源。 |
+| SceneLedger | [informedsoftware.co.nz/product/sceneledger](https://www.informedsoftware.co.nz/product/sceneledger) | 场景检查 / 记录 App；可参考“场景记录”信息结构。 |
+| ReelScribe | [reelscribe.app](https://reelscribe.app) | Instagram Reels 转写服务。 |
+| MediaScribe | [mediascribe.app](https://mediascribe.app) | YouTube transcript 提取；另有面向政府视频无障碍字幕的平台。 |
+
+`FrameLoom`（已有多个 App、视频重构和影视项目）与 `VideoContext`（已有 [BBC VideoContext](https://github.com/bbc/VideoContext)、App 和 MCP 项目）均存在明显重名，不建议作为本项目名称。
+
+ScenePacket 的差异点：本地优先，统一编排平台字幕、Whisper ASR、视觉线索和按需截帧，
+先生成可复用的上下文包，再通过 MCP 交给智能体完成总结、问答或进一步分析。
 
 ## Windows / E 盘部署
 

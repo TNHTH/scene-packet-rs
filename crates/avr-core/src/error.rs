@@ -109,7 +109,7 @@ pub fn no_transcript_asr_not_configured() -> AvrError {
     AvrError::new(
         ErrorCode::NoTranscriptAsrNotConfigured,
         "没有字幕，且未配置本地语音识别模型。",
-        "打开 AI Video Reader 设置，配置 whisper.cpp 可执行文件与模型路径后再试。",
+        "打开 ScenePacket 设置，配置 whisper.cpp 可执行文件与模型路径后再试。",
     )
 }
 

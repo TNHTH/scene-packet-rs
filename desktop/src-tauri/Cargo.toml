@@ -2,7 +2,7 @@
 name = "avr"
 version.workspace = true
 edition.workspace = true
-description = "AI Video Reader - 单 exe 桌面/MCP/CLI"
+description = "ScenePacket - 视频上下文包，单 exe 桌面/MCP/CLI"
 
 [[bin]]
 name = "avr"

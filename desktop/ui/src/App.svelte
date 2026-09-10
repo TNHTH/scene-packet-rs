@@ -98,7 +98,7 @@
 {#if showWizard}
   <div class="wizard-overlay">
     <div class="wizard card">
-      <h1>欢迎使用 AI Video Reader</h1>
+      <h1>欢迎使用 ScenePacket</h1>
       <p class="hint">选择数据根目录。ffmpeg、模型与缓存将存放在此，删除文件夹即可完全卸载。</p>
       <input bind:value={wizardPath} placeholder="D:\AIVideoReader" />
       <button class="primary" on:click={confirmWizard}>继续</button>
@@ -107,7 +107,7 @@
 {/if}
 
 <div class="titlebar" data-tauri-drag-region>
-  <span class="title">AI Video Reader</span>
+  <span class="title">ScenePacket</span>
 </div>
 
 <nav class="sidebar">
@@ -166,7 +166,7 @@
   {:else}
     <section class="card">
       <h1>关于</h1>
-      <p>AI Video Reader v2 — 单 exe，无 Python 依赖。</p>
+      <p>ScenePacket — 视频上下文包，单 exe，无 Python 依赖。</p>
       <h2>第三方组件</h2>
       <ul class="tool-list">
         {#each licenses as l}
