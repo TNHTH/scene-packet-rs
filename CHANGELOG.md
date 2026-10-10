@@ -45,6 +45,18 @@
 - 行为变化：升级后旧缓存全部失效一次；已有 `audio.wav` 会复用；本地文件先检查 ASR 配置再跑 ffmpeg；本地文件也发 asr 进度事件。
 - ~~P2-1 入口去重~~：审查核对后划掉，三个入口不存在真正重复，加 `entry` 模块反而增加耦合。
 
+### P2-3 修复：ASR 内容指纹（已验收）
+- `d3aa22d` 模型与 whisper 改用内容指纹（大小 + 头尾各 1MB 的 xxh3），不含路径；回归测试覆盖换模型、touch、复制三种情况。
+- `f1d5946` 修复偶发失败：修改时间距今不到 2 秒的文件不写入指纹缓存。
+
+### P3（部分验收）
+- `d83d16c` P3-1 基线（已验收）：新建 `crates/avr-mcp`，payload 拼装改为纯函数；ffmpeg 现生成 6 秒测试视频 + FakeTools 固定转写；insta 快照三份，关键帧只记结构；CI 设 `AVR_REQUIRE_FFMPEG=1`。
+- `eebb055` P3-2 按需读取（打回）：摘要索引、`read_transcript`（cursor 分页）、`get_frame`、帧 resource；`StageCtx` 去掉 allow；往返测试逐字段一致；首次返回 1192 → 467 tokens。
+  - 打回原因 1：路径穿越只在 `load_result` 校验，`list_visual_hints`、`extract_frames` 未校验，可读写缓存目录外文件。修复：私有字段的 `MediaKey::parse` + `MediaKey::dir(&root)`，所有拼路径处只接受 `MediaKey`，各补穿越测试。
+  - 打回原因 2：未过 P3-0 准入就把默认切到索引模式。修复：默认改回 `compact`，`index` 显式指定才生效。
+- 未完成：短视频直接返回全文的开关、MCP 工具调用日志、rmcp 升级（暂缓，等效果集证明索引模式不掉分）、`avr-mcp` 进程内 MCP 集成测试。
+
 ### 进行中
-- P3-1 输出质量基线：ffmpeg 生成的测试视频，转写/时间轴/关键帧结构快照，记录 compact payload 字节数与估算 token 数。
+- P3-0 效果集：Tears of Steel、Sintel（CC BY），中文视频待定；按固定网址与哈希下载，不进仓库，`NOTICE` 注明来源。
+- 原计划 P3-1 输出质量基线：ffmpeg 生成的测试视频，转写/时间轴/关键帧结构快照，记录 compact payload 字节数与估算 token 数。
 - P3-2 MCP 按需读取：`analyze` 只返回摘要索引，新增按时间范围取转写、按编号取关键帧两个只读工具；参数收成 `StageCtx`。
