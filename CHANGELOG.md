@@ -57,5 +57,5 @@
 - 未完成：短视频直接返回全文的开关、MCP 工具调用日志、rmcp 升级（暂缓，等效果集证明索引模式不掉分）、`avr-mcp` 进程内 MCP 集成测试。
 
 ### 进行中
-- P3-0 效果集：Tears of Steel、Sintel（CC BY），中文为 Wikimedia Commons《25 Essential Chinese Phrases》（CC BY 3.0，标准教学语音，未覆盖口语和弹幕风格；中新社视频许可核实后可替换）；按固定网址与哈希下载，不进仓库，`NOTICE` 注明来源。
+- P3-0 效果集：Tears of Steel、Sintel（CC BY），中文为中国新闻网《周建平谈中国空间站：怎么建？有何用？》（Wikimedia Commons，CC BY 3.0，3 分 37 秒新闻采访；限制：新闻采访语音，未覆盖口语化 UP 主风格与方言）；中新社视频许可核实后可替换）；按固定网址与哈希下载，不进仓库，`NOTICE` 注明来源。
 - P3-2 MCP 按需读取：`analyze` 只返回摘要索引，新增按时间范围取转写、按编号取关键帧两个只读工具；参数收成 `StageCtx`。
