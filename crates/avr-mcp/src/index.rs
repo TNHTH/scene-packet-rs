@@ -4,6 +4,7 @@
 //! - [`read_transcript`]：按时间范围取转写原文，不透明 cursor 分页。
 //! - [`frame_ref`]：按编号取关键帧的时间与 resource URI（`avr://job/{media_key}/frame/{n}`）。
 
+use avr_core::media::MediaKey;
 use avr_core::models::{AnalyzeResult, TranscriptSegment, TranscriptSource};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -124,14 +125,12 @@ pub fn frame_uri(media_key: &str, n: usize) -> String {
     format!("avr://job/{media_key}/frame/{n}")
 }
 
-/// 解析 `avr://job/{media_key}/frame/{n}`。
-pub fn parse_frame_uri(uri: &str) -> Result<(String, usize), IndexError> {
+/// 解析 `avr://job/{media_key}/frame/{n}`；media_key 经 [`MediaKey::parse`] 白名单校验。
+pub fn parse_frame_uri(uri: &str) -> Result<(MediaKey, usize), IndexError> {
     let rest = uri.strip_prefix("avr://job/").ok_or(IndexError::BadUri)?;
     let (key, n) = rest.rsplit_once("/frame/").ok_or(IndexError::BadUri)?;
-    if key.is_empty() || key.contains('/') {
-        return Err(IndexError::BadUri);
-    }
-    Ok((key.to_string(), n.parse().map_err(|_| IndexError::BadUri)?))
+    let key = MediaKey::parse(key).map_err(|_| IndexError::BadUri)?;
+    Ok((key, n.parse().map_err(|_| IndexError::BadUri)?))
 }
 
 /// 帧 n 的时间：对应 section 首个分段的中点（必然落在该 section 内）。
@@ -263,8 +262,11 @@ mod tests {
     #[test]
     fn frame_uri_roundtrip() {
         let u = frame_uri("local-abc", 3);
-        assert_eq!(parse_frame_uri(&u).unwrap(), ("local-abc".into(), 3));
+        let (k, n) = parse_frame_uri(&u).unwrap();
+        assert_eq!((k.as_str(), n), ("local-abc", 3));
         assert!(parse_frame_uri("avr://job/a/b/frame/1").is_err());
+        assert!(parse_frame_uri("avr://job/../frame/1").is_err());
+        assert!(parse_frame_uri("avr://job/..%2F/frame/1").is_err());
         assert!(parse_frame_uri("http://x").is_err());
         assert!(parse_frame_uri("avr://job/k/frame/x").is_err());
     }

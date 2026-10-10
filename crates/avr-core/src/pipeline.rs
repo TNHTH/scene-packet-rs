@@ -12,7 +12,7 @@ use crate::config::{effective_cache_dir, load_config, AppConfig};
 use crate::error::{no_transcript_asr_not_configured, unsupported_url, AvrError};
 use crate::extract::platform::detect_platform;
 use crate::jobs::{JobManager, JobManifest, JobProgress};
-use crate::media::{media_key, MediaSource};
+use crate::media::{media_key, MediaKey, MediaSource};
 use crate::models::{AnalyzeResult, CacheMetadata, Transcript, TRANSCRIPT_INLINE_LIMIT};
 use crate::paths::to_file_uri;
 use crate::root::DataRoot;
@@ -123,14 +123,13 @@ async fn analyze_url_with(
         return Err(unsupported_url());
     }
 
-    let base_cache = effective_cache_dir(&ctx.root, &ctx.config);
     let key = media_key(
         &MediaSource::Url {
             url: url.to_string(),
         },
         None,
     )?;
-    let item_cache = base_cache.join(&key);
+    let item_cache = item_cache_dir(ctx, &MediaKey::parse(&key)?);
 
     let url_clone = url.to_string();
     let ctx_clone = ctx.clone();
@@ -225,7 +224,7 @@ async fn transcribe_local_with(
         },
         duration,
     )?;
-    let item_cache = effective_cache_dir(&ctx.root, &ctx.config).join(&key);
+    let item_cache = item_cache_dir(ctx, &MediaKey::parse(&key)?);
 
     let path_clone = path.to_path_buf();
     let ctx_clone = ctx.clone();
@@ -390,28 +389,30 @@ where
     Ok(audio)
 }
 
-/// 按 media_key 读取已缓存的分析结果（只读，供 MCP 按需读取工具使用）。
-/// media_key 只允许字母数字与 `-_.`，防止路径穿越；无缓存返回 `Ok(None)`。
+/// 媒体的缓存目录。只接受校验过的 [`MediaKey`]，这是拼接缓存路径的唯一入口。
+pub fn item_cache_dir(ctx: &PipelineContext, key: &MediaKey) -> PathBuf {
+    key.dir(&effective_cache_dir(&ctx.root, &ctx.config))
+}
+
+/// 从外部传入的原始字符串（MCP 参数、resource URI）解析 media_key 并得到缓存目录。
+/// 非法 key（含路径分隔符、`..`、以 `.` 开头等）返回错误，不会拼出缓存目录之外的路径。
+pub fn resolve_item_cache(
+    ctx: &PipelineContext,
+    raw_key: &str,
+) -> Result<(MediaKey, PathBuf), AvrError> {
+    let key = MediaKey::parse(raw_key)?;
+    let dir = item_cache_dir(ctx, &key);
+    Ok((key, dir))
+}
+
+/// 按 media_key 读取已缓存的分析结果（只读，供 MCP 按需读取工具使用）；无缓存返回 `Ok(None)`。
 pub fn load_result(
     ctx: &PipelineContext,
-    media_key: &str,
+    key: &MediaKey,
 ) -> Result<Option<AnalyzeResult>, AvrError> {
-    let valid = !media_key.is_empty()
-        && media_key != "."
-        && media_key != ".."
-        && media_key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    if !valid {
-        return Err(AvrError::new(
-            crate::error::ErrorCode::CacheError,
-            "media_key 非法",
-            "使用 analyze 返回的 media_key。",
-        ));
-    }
-    let item_cache = effective_cache_dir(&ctx.root, &ctx.config).join(media_key);
+    let item_cache = item_cache_dir(ctx, key);
     Ok(load_cached_transcript(&item_cache, None)?
-        .map(|(video, trans, _)| make_analyze_result(&video, &trans, &item_cache, media_key)))
+        .map(|(video, trans, _)| make_analyze_result(&video, &trans, &item_cache, key.as_str())))
 }
 
 fn build_result_from_cache(item_cache: &Path, key: &str) -> Result<AnalyzeResult, AvrError> {
@@ -778,10 +779,18 @@ mod tests {
         )
         .await
         .unwrap();
-        let loaded = load_result(&ctx, &r.media_key).unwrap().unwrap();
+        let key = MediaKey::parse(&r.media_key).unwrap();
+        let loaded = load_result(&ctx, &key).unwrap().unwrap();
         assert_eq!(loaded.transcript, r.transcript);
-        assert!(load_result(&ctx, "missing-key").unwrap().is_none());
-        assert!(load_result(&ctx, "../etc").is_err());
-        assert!(load_result(&ctx, "..").is_err());
+        let missing = MediaKey::parse("missing-key").unwrap();
+        assert!(load_result(&ctx, &missing).unwrap().is_none());
+
+        // 外部输入只能经 resolve_item_cache 拼路径：穿越输入被拒，合法输入落在缓存根下。
+        let base = effective_cache_dir(&ctx.root, &ctx.config);
+        for bad in ["../etc", "..", "a/../../b", "/etc", ".x", "a\\..\\b", ""] {
+            assert!(resolve_item_cache(&ctx, bad).is_err(), "{bad:?}");
+        }
+        let (_, dir) = resolve_item_cache(&ctx, &r.media_key).unwrap();
+        assert_eq!(dir.parent().unwrap(), base);
     }
 }
