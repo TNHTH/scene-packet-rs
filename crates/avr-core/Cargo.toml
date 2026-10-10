@@ -23,6 +23,7 @@ sha2.workspace = true
 zip.workspace = true
 futures-util.workspace = true
 base64 = { workspace = true }
+fs4 = { version = "0.13", features = ["sync"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
