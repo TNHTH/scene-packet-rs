@@ -1,0 +1,3 @@
+[{"video_id":"sintel","question":"DUMMY: what is she searching for?","answer_start":20,"answer_end":25,"kind":"speech"},
+ {"video_id":"sintel","question":"DUMMY: who tells her to sit still?","answer_start":88,"answer_end":93,"kind":"speech"},
+ {"video_id":"tos","question":"DUMMY: what is on screen at the start?","answer_start":0,"answer_end":5,"kind":"visual"}]
