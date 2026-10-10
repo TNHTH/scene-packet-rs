@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use xxhash_rust::xxh3::Xxh3;
 
 const CHUNK: u64 = 1024 * 1024;
+const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 type Key = (PathBuf, u64, Option<SystemTime>);
 static CACHE: LazyLock<Mutex<HashMap<Key, String>>> = LazyLock::new(Default::default);
@@ -31,7 +32,15 @@ pub fn content_fingerprint(path: &Path) -> Option<String> {
         return Some(hit.clone());
     }
     let fp = compute(path, meta.len()).ok()?;
-    CACHE.lock().insert(key, fp.clone());
+    // racy-git 式保护：mtime 距今太近时，文件系统时间戳粒度可能让“同大小改写”
+    // 得到相同的 (大小, mtime)，此时不写缓存，下次重新计算。
+    let settled = key
+        .2
+        .and_then(|m| SystemTime::now().duration_since(m).ok())
+        .is_some_and(|age| age >= RACY_WINDOW);
+    if settled {
+        CACHE.lock().insert(key, fp.clone());
+    }
     Some(fp)
 }
 
