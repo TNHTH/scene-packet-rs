@@ -15,4 +15,4 @@
     python3 bench/effect/eval_index.py --set /workspace/avr-effect-set --questions questions.json [--json out.json]
 
 规则见脚本文件头（分段复刻 `avr-mcp/src/index.rs::sections`；概要 A/B/C + 全文上限；BM25 中文字二元组/英文小写词；
-段数 < 6 改报 hit@1；visual 单列）。`dummy_questions.json` 仅用于脚本自测，不是效果集题目。
+段数 < 6 改报 hit@1；visual 单列）。匹配前做 OpenCC 繁→简（whisper medium 的 zh 输出为繁体）。`dummy_questions.json` 仅用于脚本自测，不是效果集题目。

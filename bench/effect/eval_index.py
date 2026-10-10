@@ -14,7 +14,7 @@
   - 概要方法只换生成方式：A 首句前 40 字(+…，复刻 summarize)；B 每段 TF-IDF top-8 词元
     （以视频内各段为文档集，词元同匹配器）；C 段内头、中、尾各一句拼接。
     UPPER = 段全文（上限）。
-  - 匹配器：BM25(k1=1.2,b=0.75)，中文（CJK）按字二元组，英文/数字按词小写。分数并列按段序。
+  - 匹配器：先 OpenCC 繁→简；BM25(k1=1.2,b=0.75)，中文（CJK）按字二元组，英文/数字按词小写。分数并列按段序。
   - 正确：段时间区间与 [answer_start, answer_end] 有正重叠。
   - 段数 < 6 的视频：主指标改报 hit@1（标注 LOW_N）。visual 题单独统计，不计入方法比较。
 """
@@ -26,9 +26,15 @@ CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]+")
 WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
 TOPK = 8
 
+try:  # 繁→简归一（whisper medium 对 zh 常输出繁体；对题目和概要同样处理，对各方法中立）
+    from opencc import OpenCC
+    _T2S = OpenCC("t2s").convert
+except ImportError:
+    sys.exit("需要 opencc: pip install opencc-python-reimplemented")
+
 def tokens(text):
     out = []
-    low = text.lower()
+    low = _T2S(text).lower()
     for m in re.finditer(r"[\u3400-\u9fff\uf900-\ufaff]+|[a-z0-9]+(?:'[a-z]+)?", low):
         t = m.group(0)
         if CJK.fullmatch(t):
