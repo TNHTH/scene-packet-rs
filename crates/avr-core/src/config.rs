@@ -1,7 +1,6 @@
 //! 配置读写（TOML）。
 
 use std::fs;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -51,8 +50,33 @@ pub struct AsrConfig {
     pub active_preset: String,
     #[serde(default)]
     pub model_path: String,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub threads: Option<u32>,
+    #[serde(default)]
+    pub vad_model_path: String,
+    #[serde(default = "default_vad_pad")]
+    pub vad_speech_pad_ms: u32,
+    #[serde(default = "default_vad_silence")]
+    pub vad_min_silence_ms: u32,
+    #[serde(default)]
+    pub suppress_non_speech: bool,
+    #[serde(default)]
+    pub no_fallback: bool,
 }
 
+fn default_language() -> String {
+    "zh".into()
+}
+fn default_vad_pad() -> u32 {
+    180
+}
+fn default_vad_silence() -> u32 {
+    300
+}
 fn default_auto() -> String {
     "auto".to_string()
 }
@@ -60,13 +84,13 @@ fn default_whisper_preset() -> String {
     "whisper-cpp-cpu".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OutputConfig {
     #[serde(default)]
     pub cache_dir: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolsConfig {
     #[serde(default)]
     pub ffmpeg_path: String,
@@ -112,7 +136,7 @@ impl Default for AppConfig {
             asr: AsrConfig {
                 default: default_auto(),
                 active_preset: default_whisper_preset(),
-                model_path: String::new(),
+                ..AsrConfig::default()
             },
             output: OutputConfig {
                 cache_dir: String::new(),
@@ -144,24 +168,14 @@ impl Default for AsrConfig {
             default: default_auto(),
             active_preset: default_whisper_preset(),
             model_path: String::new(),
-        }
-    }
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self { cache_dir: String::new() }
-    }
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self {
-            ffmpeg_path: String::new(),
-            ffprobe_path: String::new(),
-            ytdlp_path: String::new(),
-            whisper_cli_path: String::new(),
-            whisper_model_path: String::new(),
+            language: default_language(),
+            prompt: String::new(),
+            threads: None,
+            vad_model_path: String::new(),
+            vad_speech_pad_ms: 180,
+            vad_min_silence_ms: 300,
+            suppress_non_speech: false,
+            no_fallback: false,
         }
     }
 }
@@ -185,23 +199,26 @@ pub fn load_config(root: &DataRoot) -> Result<AppConfig, AvrError> {
     }
     let content = fs::read_to_string(&path).map_err(io_err)?;
     let cfg: AppConfig = toml::from_str(&content).map_err(|e| {
-        AvrError::new(ErrorCode::ConfigError, e.to_string(), "检查 config.toml 格式。")
+        AvrError::new(
+            ErrorCode::ConfigError,
+            e.to_string(),
+            "检查 config.toml 格式。",
+        )
     })?;
     Ok(cfg)
 }
 
 pub fn save_config(root: &DataRoot, cfg: &AppConfig) -> Result<(), AvrError> {
     root.ensure_layout()?;
-    let content = toml::to_string_pretty(cfg).map_err(|e| {
-        AvrError::new(ErrorCode::ConfigError, e.to_string(), "序列化配置失败。")
-    })?;
+    let content = toml::to_string_pretty(cfg)
+        .map_err(|e| AvrError::new(ErrorCode::ConfigError, e.to_string(), "序列化配置失败。"))?;
     fs::write(root.config_path(), content).map_err(io_err)?;
     Ok(())
 }
 
 pub fn effective_cache_dir(root: &DataRoot, cfg: &AppConfig) -> std::path::PathBuf {
     if !cfg.output.cache_dir.is_empty() {
-        std::path::PathBuf::from(&cfg.output.cache_dir)
+        root.path.join(&cfg.output.cache_dir)
     } else {
         root.cache_dir()
     }

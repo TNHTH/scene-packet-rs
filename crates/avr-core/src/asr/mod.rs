@@ -56,7 +56,7 @@ impl AsrService {
         if !self.is_ready(&preset) {
             return Err(crate::error::no_transcript_asr_not_configured());
         }
-        let lang = language.unwrap_or("zh");
+        let lang = language.unwrap_or(&self.config.asr.language);
         let segments = engine::run_preset(&self.root, &self.config, &preset, audio, lang).await?;
         Ok(Transcript {
             language: lang.to_string(),

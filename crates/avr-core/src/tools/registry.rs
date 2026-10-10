@@ -1,10 +1,10 @@
 //! 工具路径统一 API。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::config::AppConfig;
-use crate::root::DataRoot;
 use crate::error::{ffmpeg_missing, tool_not_ready, ytdlp_missing, AvrError};
+use crate::root::DataRoot;
 use crate::tools::detect;
 
 pub struct ToolRegistry {
@@ -68,21 +68,21 @@ impl ToolRegistry {
             "ffprobe" => self.ffprobe_path(),
             "yt-dlp" => self.ytdlp_path(),
             "whisper" => self.whisper_cli_path(),
-            _ => return ToolStatus {
-                id: id.to_string(),
-                ready: false,
-                path: None,
-                version: None,
-            },
+            _ => {
+                return ToolStatus {
+                    id: id.to_string(),
+                    ready: false,
+                    path: None,
+                    version: None,
+                }
+            }
         };
-        let ok = path_result.is_ok();
+        let path_ok = path_result.is_ok();
         let path = path_result.ok();
-        let version = path
-            .as_ref()
-            .and_then(|p| detect::detect_version(p).ok());
+        let version = path.as_ref().and_then(|p| detect::detect_version(p).ok());
         ToolStatus {
             id: id.to_string(),
-            ready: ok,
+            ready: path_ok && version.is_some(),
             path,
             version,
         }
@@ -99,13 +99,36 @@ pub struct ToolStatus {
 
 fn resolve_tool(manual: &str, default: PathBuf) -> Option<PathBuf> {
     if !manual.is_empty() {
-        let p = PathBuf::from(manual);
-        if detect::file_exists(&p) {
-            return Some(p);
+        return executable(std::path::Path::new(manual)).then(|| PathBuf::from(manual));
+    }
+    let name = default.file_name()?.to_str()?;
+    let native = if cfg!(windows) {
+        name
+    } else {
+        name.trim_end_matches(".exe")
+    };
+    for candidate in [default.with_file_name(native), default.clone()] {
+        if executable(&candidate) {
+            return Some(candidate);
         }
     }
-    if detect::file_exists(&default) {
-        return Some(default);
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|p| p.join(native))
+            .find(|p| executable(p))
+    })
+}
+fn executable(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
     }
-    None
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    true
 }

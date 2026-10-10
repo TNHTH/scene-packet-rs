@@ -4,12 +4,28 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::error::{process_failed, AvrError};
-use crate::process::{ProcessRequest, run_blocking};
+use crate::process::{run_blocking, ProcessRequest};
 
 pub fn detect_version(program: &Path) -> Result<String, AvrError> {
     let req = ProcessRequest {
         program: program.to_path_buf(),
-        args: vec!["-version".into()],
+        args: vec![if program
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .contains("whisper")
+        {
+            "--help".into()
+        } else if program
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .contains("yt-dlp")
+        {
+            "--version".into()
+        } else {
+            "-version".into()
+        }],
         cwd: None,
         timeout: Some(Duration::from_secs(15)),
         expected_outputs: vec![],
@@ -18,8 +34,8 @@ pub fn detect_version(program: &Path) -> Result<String, AvrError> {
     let first = out
         .stdout
         .lines()
-        .next()
-        .or_else(|| out.stderr.lines().next())
+        .chain(out.stderr.lines())
+        .find(|line| !line.trim().is_empty())
         .unwrap_or("unknown")
         .to_string();
     if out.exit_code != 0 && first == "unknown" {

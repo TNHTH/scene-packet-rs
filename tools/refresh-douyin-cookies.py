@@ -17,13 +17,13 @@ def parse_netscape(path: Path) -> dict[tuple[str, str], tuple[str, str, str, str
     if not path.exists():
         return rows
     for line in path.read_text(encoding="utf-8").splitlines():
-        if not line or line.startswith("#"):
+        if not line or (line.startswith("#") and not line.startswith("#HttpOnly_")):
             continue
         parts = line.split("\t")
         if len(parts) != 7:
             continue
         domain, flag, cpath, secure, expiry, name, value = parts
-        rows[(domain, name)] = (domain, flag, cpath, secure, expiry, name, value)
+        rows[(domain[len("#HttpOnly_"):] if domain.startswith("#HttpOnly_") else domain, name)] = (domain, flag, cpath, secure, expiry, name, value)
     return rows
 
 
@@ -40,7 +40,7 @@ def write_netscape(path: Path, rows: dict[tuple[str, str], tuple[str, str, str, 
 def merge_document_cookie(cookie_str: str, existing: Path) -> int:
     rows = parse_netscape(existing)
     updated = 0
-    for part in cookie_str.split("; "):
+    for part in cookie_str.split(";"):
         part = part.strip()
         if not part or "=" not in part:
             continue
@@ -49,6 +49,8 @@ def merge_document_cookie(cookie_str: str, existing: Path) -> int:
             continue
         key = (DOMAIN, name)
         old = rows.get(key)
+        if old and old[0].startswith("#HttpOnly_"):
+            continue
         secure = old[3] if old else "FALSE"
         rows[key] = (DOMAIN, "TRUE", "/", secure, EXPIRY, name, value)
         updated += 1

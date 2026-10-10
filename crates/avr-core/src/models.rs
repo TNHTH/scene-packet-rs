@@ -15,6 +15,7 @@ pub struct VideoInfo {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
+    Local,
     Bilibili,
     Douyin,
 }
@@ -22,6 +23,7 @@ pub enum Platform {
 impl Platform {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Local => "local",
             Self::Bilibili => "bilibili",
             Self::Douyin => "douyin",
         }

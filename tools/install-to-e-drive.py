@@ -190,13 +190,18 @@ enable_transparency = true
 scene_threshold = 0.3
 visual_hint_limit = 50
 """
-    (DATA_ROOT / "config.toml").write_text(cfg, encoding="utf-8")
+    config_path = DATA_ROOT / "config.toml"
+    if not config_path.exists():
+        config_path.write_text(cfg, encoding="utf-8")
+    else:
+        print("[保留] 已有 config.toml，未覆盖用户配置")
     appdata = Path(os.environ["APPDATA"]) / "AIVideoReader"
     appdata.mkdir(parents=True, exist_ok=True)
     ptr = appdata / "root.txt"
     tmp = ptr.parent / "root.txt.tmp"
-    tmp.write_text(str(DATA_ROOT), encoding="utf-8")
-    tmp.replace(ptr)
+    if not ptr.exists():
+        tmp.write_text(str(DATA_ROOT), encoding="utf-8")
+        tmp.replace(ptr)
 
 
 def main() -> int:

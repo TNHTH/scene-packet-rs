@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-10",
+  "environment": "Ubuntu 22.04",
+  "logs": {
+    "final-gate-tests.log": "c4dff6b2326929e1b5a3b6f2fe446130732e3df5a5884234032c762f804efbd8",
+    "desktop-final.log": "9716d556c4b8b1ac2c8da0ad4cc4887aa0ccd7b1788a4ba688992e802ce1abd0",
+    "ui-build-final.log": "5c4794ac2e78bb96e1836e3ded7fca504d7f684e0cab87cd54bbd8efedef3d06",
+    "mcp-smoke.log": "6758cf329605051f5cb4af25296b9dbe68beaccc756f6f6520a98365a6383577",
+    "browser-validation.json": "9d7ec41d2fdd95746cbe4bad4fa24688d6a4a0371e4863cda121593ad8056e23",
+    "real-packet.log": "ab9b018f783b5fa50bce89dae5e49cf819728002e56f646e5404e8d370a05a3e",
+    "packet-validation.json": "97b9687cfd77203f426cb72c759961e1f685d75241e97779f0c56912ef919c51",
+    "real-recheck.log": "7deed77157e41960374ced275eb8cac27b600e591270e765a056e196b33baf33"
+  },
+  "rust_tests": 31,
+  "python_tests": 3,
+  "real_video_frames": 88,
+  "browser_tauri": "mock",
+  "native_windows": "not_tested"
+}

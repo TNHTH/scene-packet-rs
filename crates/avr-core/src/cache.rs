@@ -26,14 +26,19 @@ pub fn find_cache_by_url(base_cache: &Path, url: &str) -> Option<PathBuf> {
         if !video_path.exists() {
             continue;
         }
-        let content = fs::read_to_string(&video_path).ok()?;
-        let data: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let Ok(content) = fs::read_to_string(&video_path) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
         let u = data.get("url").and_then(|v| v.as_str());
         let w = data.get("webpage_url").and_then(|v| v.as_str());
-        if u == Some(normalized) || w == Some(normalized) {
-            if path.join("transcript.json").exists() && path.join("metadata.json").exists() {
-                return Some(path);
-            }
+        if (u == Some(normalized) || w == Some(normalized))
+            && path.join("transcript.json").exists()
+            && path.join("metadata.json").exists()
+        {
+            return Some(path);
         }
     }
     None
@@ -49,10 +54,10 @@ pub fn load_cached_transcript(
     }
     let meta: CacheMetadata =
         serde_json::from_str(&fs::read_to_string(&meta_path).map_err(io_err)?).map_err(json_err)?;
-    let trans: Transcript =
-        serde_json::from_str(&fs::read_to_string(&trans_path).map_err(io_err)?).map_err(json_err)?;
+    let trans: Transcript = serde_json::from_str(&fs::read_to_string(&trans_path).map_err(io_err)?)
+        .map_err(json_err)?;
     let video_path = cache_dir.join("video.json");
-    let video = if video_path.exists() {
+    let mut video: VideoInfo = if video_path.exists() {
         serde_json::from_str(&fs::read_to_string(&video_path).map_err(io_err)?).map_err(json_err)?
     } else {
         VideoInfo {
@@ -61,12 +66,26 @@ pub fn load_cached_transcript(
             url: String::new(),
             duration: 0.0,
             platform: match meta.platform.as_str() {
+                "local" => crate::models::Platform::Local,
                 "douyin" => crate::models::Platform::Douyin,
                 _ => crate::models::Platform::Bilibili,
             },
             webpage_url: String::new(),
         }
     };
+    if meta.platform == "local" {
+        video.platform = crate::models::Platform::Local;
+    }
+    // JSON 是转写真值；恢复中断写入或旧版本缺失的派生文件。
+    for (name, content) in [
+        ("transcript.txt", trans.full_text()),
+        ("subtitle.srt", segments_to_srt(&trans)),
+    ] {
+        let path = cache_dir.join(name);
+        if !path.is_file() {
+            atomic_write(&path, content.as_bytes())?;
+        }
+    }
     Ok(Some((video, trans, meta)))
 }
 
@@ -77,17 +96,10 @@ pub fn save_cache(
     metadata: &CacheMetadata,
 ) -> Result<PathBuf, AvrError> {
     fs::create_dir_all(cache_dir).map_err(io_err)?;
-    atomic_write(
-        &cache_dir.join("video.json"),
-        video_json(video)?.as_bytes(),
-    )?;
+    atomic_write(&cache_dir.join("video.json"), video_json(video)?.as_bytes())?;
     atomic_write(
         &cache_dir.join("transcript.json"),
         transcript_json(transcript)?.as_bytes(),
-    )?;
-    atomic_write(
-        &cache_dir.join("metadata.json"),
-        metadata_json(metadata)?.as_bytes(),
     )?;
     atomic_write(
         &cache_dir.join("subtitle.srt"),
@@ -95,6 +107,10 @@ pub fn save_cache(
     )?;
     let text_path = cache_dir.join("transcript.txt");
     atomic_write(&text_path, transcript.full_text().as_bytes())?;
+    atomic_write(
+        &cache_dir.join("metadata.json"),
+        metadata_json(metadata)?.as_bytes(),
+    )?;
     Ok(text_path)
 }
 

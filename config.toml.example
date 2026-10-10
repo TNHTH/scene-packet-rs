@@ -1,27 +1,34 @@
-# 复制到数据根目录并重命名为 config.toml
-# 数据根默认：%APPDATA%\AIVideoReader\root.txt 指向的路径（如 E:/AIVideoReader）
-
+# 复制为 <data-root>/config.toml；已存在的配置先比较，不直接覆盖。
+# 留空工具路径会依次查找数据根 bin 和 PATH；手动配置使用绝对路径。
 [extractor]
 name = "ytdlp"
 cookies_from_browser = "none"
-cookies_file = "E:/AIVideoReader/cookies/douyin.txt"
-# 必须与导出 Cookie 的浏览器 User-Agent 完全一致
-user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+cookies_file = ""
+# 使用抖音 Cookie 时填导出浏览器的真实 User-Agent。
+user_agent = ""
 
 [asr]
 default = "auto"
-active_preset = "whisper-cpp-cublas"
-model_path = "E:/models/ggml-large-v3-turbo.bin"
+active_preset = "whisper-cpp-cpu" # NVIDIA 环境可选 whisper-cpp-cublas
+model_path = "" # 默认 <data-root>/models/ggml-large-v3-turbo.bin
+language = "zh"
+prompt = "" # 可填写专业术语；不会自动改写识别结果
+threads = 8
+vad_model_path = "" # 可选 Silero VAD 模型绝对路径，要求 whisper.cpp 支持 --vad
+vad_speech_pad_ms = 180
+vad_min_silence_ms = 300
+suppress_non_speech = false
+no_fallback = false
 
 [output]
-cache_dir = ""
+cache_dir = "" # 留空用数据根 cache；相对路径以数据根为基准
 
 [tools]
-ffmpeg_path = "E:/ffmpeg/ffmpeg.exe"
-ffprobe_path = "E:/ffmpeg/ffprobe.exe"
-ytdlp_path = "E:/yt-dlp/yt-dlp.exe"
-whisper_cli_path = "E:/whisper/whisper-cli.exe"
-whisper_model_path = "E:/models/ggml-large-v3-turbo.bin"
+ffmpeg_path = ""
+ffprobe_path = ""
+ytdlp_path = ""
+whisper_cli_path = ""
+whisper_model_path = "" # 非空时优先于 asr.model_path
 
 [ui]
 enable_transparency = true

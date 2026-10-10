@@ -7,12 +7,9 @@ use std::sync::LazyLock;
 
 use crate::models::{Transcript, TranscriptSegment, TranscriptSource};
 
-static VTT_TIME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})").unwrap()
-});
-
-static SRT_TIME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})").unwrap()
+static CUE_TIME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^((?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3})\s*-->\s*((?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3})")
+        .unwrap()
 });
 
 const ZH_LANG_PRIORITY: [&str; 4] = ["zh-Hans", "zh-CN", "zh", "ai-zh"];
@@ -35,106 +32,43 @@ pub fn pick_subtitle_lang(available: &[String]) -> Option<String> {
     available.first().cloned()
 }
 
-pub fn parse_vtt(content: &str, language: &str) -> Transcript {
+fn parse_cues(content: &str, language: &str) -> Transcript {
+    let normalized = content
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let mut segments = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut current_start: Option<f64> = None;
-    let mut current_end: Option<f64> = None;
-    let mut buffer: Vec<String> = Vec::new();
-
-    let flush = |start: &mut Option<f64>,
-                 end: &mut Option<f64>,
-                 buffer: &mut Vec<String>,
-                 segments: &mut Vec<TranscriptSegment>,
-                 seen: &mut std::collections::HashSet<String>| {
-        if let Some(s) = *start {
-            if !buffer.is_empty() {
-                let text = buffer.join(" ").trim().to_string();
-                let text = strip_tags(&text);
-                if !text.is_empty() && !seen.contains(&text) {
-                    seen.insert(text.clone());
-                    segments.push(TranscriptSegment {
-                        start: s,
-                        end: end.unwrap_or(s),
-                        text,
-                    });
-                }
+    for block in normalized.split("\n\n") {
+        let lines: Vec<_> = block.lines().collect();
+        if lines.first().is_some_and(|line| {
+            line.starts_with("NOTE") || line.starts_with("STYLE") || line.starts_with("REGION")
+        }) {
+            continue;
+        }
+        if let Some((index, captures)) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(i, line)| CUE_TIME.captures(line.trim()).map(|c| (i, c)))
+        {
+            let start = parse_ts(&captures[1]);
+            let end = parse_ts(&captures[2]);
+            let text = strip_tags(&lines[index + 1..].join(" ")).trim().to_string();
+            if !text.is_empty() && end >= start {
+                segments.push(TranscriptSegment { start, end, text });
             }
         }
-        buffer.clear();
-    };
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty()
-            || line.starts_with("WEBVTT")
-            || line.starts_with("Kind:")
-            || line.starts_with("Language:")
-        {
-            continue;
-        }
-        if let Some(m) = VTT_TIME.captures(line) {
-            flush(
-                &mut current_start,
-                &mut current_end,
-                &mut buffer,
-                &mut segments,
-                &mut seen,
-            );
-            current_start = Some(parse_ts(m.get(1).unwrap().as_str()));
-            current_end = Some(parse_ts(m.get(2).unwrap().as_str()));
-            continue;
-        }
-        if line.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        buffer.push(line.to_string());
     }
-    flush(
-        &mut current_start,
-        &mut current_end,
-        &mut buffer,
-        &mut segments,
-        &mut seen,
-    );
-
     Transcript {
-        language: language.to_string(),
+        language: language.into(),
         source: TranscriptSource::Subtitle,
         segments,
     }
 }
-
+pub fn parse_vtt(content: &str, language: &str) -> Transcript {
+    parse_cues(content, language)
+}
 pub fn parse_srt(content: &str, language: &str) -> Transcript {
-    let mut segments = Vec::new();
-    for block in content.trim().split("\n\n") {
-        let lines: Vec<&str> = block.lines().collect();
-        if lines.len() < 2 {
-            continue;
-        }
-        let (time_line, text_lines) = if lines[0].chars().all(|c| c.is_ascii_digit()) {
-            (lines[1], &lines[2..])
-        } else {
-            (lines[0], &lines[1..])
-        };
-        if let Some(m) = SRT_TIME.captures(time_line) {
-            let start = parse_srt_ts(m.get(1).unwrap().as_str());
-            let end = parse_srt_ts(m.get(2).unwrap().as_str());
-            let text = text_lines.join(" ").trim().to_string();
-            if !text.is_empty() {
-                segments.push(TranscriptSegment {
-                    start,
-                    end,
-                    text,
-                });
-            }
-        }
-    }
-    Transcript {
-        language: language.to_string(),
-        source: TranscriptSource::Subtitle,
-        segments,
-    }
+    parse_cues(content, language)
 }
 
 pub fn parse_srt_file(path: &Path, language: &str) -> std::io::Result<Transcript> {
@@ -179,19 +113,6 @@ fn parse_ts(ts: &str) -> f64 {
         }
         _ => ts.parse().unwrap_or(0.0),
     }
-}
-
-fn parse_srt_ts(ts: &str) -> f64 {
-    let parts: Vec<&str> = ts.split(':').collect();
-    if parts.len() != 3 {
-        return 0.0;
-    }
-    let h = parts[0].parse::<f64>().unwrap_or(0.0);
-    let m = parts[1].parse::<f64>().unwrap_or(0.0);
-    let rest: Vec<&str> = parts[2].split(',').collect();
-    let s = rest[0].parse::<f64>().unwrap_or(0.0);
-    let ms = rest.get(1).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
-    h * 3600.0 + m * 60.0 + s + ms / 1000.0
 }
 
 fn fmt_ts(seconds: f64) -> String {

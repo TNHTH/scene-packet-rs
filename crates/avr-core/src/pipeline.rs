@@ -5,7 +5,7 @@ use std::path::Path;
 use chrono::Utc;
 
 use crate::asr::AsrService;
-use crate::cache::{find_cache_by_url, load_cached_transcript, save_cache};
+use crate::cache::{load_cached_transcript, save_cache};
 use crate::config::{effective_cache_dir, load_config, AppConfig};
 use crate::error::{no_transcript_asr_not_configured, unsupported_url, AvrError};
 use crate::extract::platform::detect_platform;
@@ -14,8 +14,7 @@ use crate::ffmpeg::{extract_audio_wav, probe_duration, FfmpegContext};
 use crate::jobs::{shared_job_manager, JobManifest, JobProgress};
 use crate::media::{media_key, MediaSource};
 use crate::models::{
-    AnalyzeResult, CacheMetadata, Transcript, TRANSCRIPT_INLINE_LIMIT, TRANSCRIPT_PREVIEW_LIMIT,
-    format_inline_text, truncate_utf8,
+    format_inline_text, AnalyzeResult, CacheMetadata, Transcript, TRANSCRIPT_INLINE_LIMIT,
 };
 use crate::paths::to_file_uri;
 use crate::root::DataRoot;
@@ -27,8 +26,11 @@ pub struct PipelineContext {
 }
 
 impl PipelineContext {
-    pub fn load(root: DataRoot) -> Result<Self, AvrError> {
+    pub fn load(mut root: DataRoot) -> Result<Self, AvrError> {
         root.ensure_layout()?;
+        root.path = std::fs::canonicalize(&root.path).map_err(|e| {
+            AvrError::new(crate::ErrorCode::IoError, e.to_string(), "检查数据目录。")
+        })?;
         let config = load_config(&root)?;
         Ok(Self { root, config })
     }
@@ -40,7 +42,15 @@ pub async fn analyze_url(ctx: &PipelineContext, url: &str) -> Result<AnalyzeResu
     }
 
     let base_cache = effective_cache_dir(&ctx.root, &ctx.config);
-    let key = media_key(&MediaSource::Url { url: url.to_string() }, None)?;
+    let key = processing_key(
+        ctx,
+        &media_key(
+            &MediaSource::Url {
+                url: url.to_string(),
+            },
+            None,
+        )?,
+    )?;
     let item_cache = base_cache.join(&key);
 
     let mgr = shared_job_manager();
@@ -72,12 +82,6 @@ async fn run_url_pipeline(
         percent: 5,
     });
 
-    if let Some(hit) = find_cache_by_url(&effective_cache_dir(&ctx.root, &ctx.config), url) {
-        if load_cached_transcript(&hit)?.is_some() {
-            return build_result_from_cache(&hit, key);
-        }
-    }
-
     if let Some(cached) = load_cached_transcript(item_cache)? {
         let (video, trans, _) = cached;
         return Ok(make_analyze_result(&video, &trans, item_cache, key));
@@ -104,7 +108,12 @@ async fn run_url_pipeline(
     let mut asr_provider: Option<String> = Some("subtitle".into());
     let mut asr_model = String::new();
 
-    if transcript.is_none() || transcript.as_ref().map(|t| t.segments.is_empty()).unwrap_or(true) {
+    if transcript.is_none()
+        || transcript
+            .as_ref()
+            .map(|t| t.segments.is_empty())
+            .unwrap_or(true)
+    {
         let asr = AsrService::new(ctx.root.clone(), ctx.config.clone());
         let preset = asr.active_preset(None, Some(video.platform.as_str()));
         if !asr.is_ready(&preset) {
@@ -117,7 +126,10 @@ async fn run_url_pipeline(
         });
         let audio_path = item_cache.join("audio.wav");
         extractor.download_audio(url, &audio_path).await?;
-        transcript = Some(asr.transcribe(&audio_path, None, Some(video.platform.as_str())).await?);
+        transcript = Some(
+            asr.transcribe(&audio_path, None, Some(video.platform.as_str()))
+                .await?,
+        );
         asr_provider = Some(preset);
         asr_model = ctx.config.tools.whisper_model_path.clone();
     }
@@ -151,14 +163,23 @@ pub async fn transcribe_local(
     ctx: &PipelineContext,
     path: &Path,
 ) -> Result<AnalyzeResult, AvrError> {
+    let path_buf = std::fs::canonicalize(path).map_err(|e| {
+        AvrError::new(
+            crate::ErrorCode::IoError,
+            e.to_string(),
+            "检查媒体文件路径。",
+        )
+    })?;
+    let path = path_buf.as_path();
     let ffmpeg = FfmpegContext::resolve(&ctx.root, &ctx.config)?;
-    let duration = probe_duration(&ffmpeg, path).await.ok();
+    let duration = Some(probe_duration(&ffmpeg, path).await?);
     let key = media_key(
         &MediaSource::LocalFile {
             path: path.to_path_buf(),
         },
         duration,
     )?;
+    let key = processing_key(ctx, &key)?;
     let base_cache = effective_cache_dir(&ctx.root, &ctx.config);
     let item_cache = base_cache.join(&key);
 
@@ -184,7 +205,17 @@ async fn run_local_pipeline(
     item_cache: &Path,
     key: &str,
 ) -> Result<AnalyzeResult, AvrError> {
-    if let Some((video, trans, _)) = load_cached_transcript(item_cache)? {
+    if let Some((mut video, trans, meta)) = load_cached_transcript(item_cache)? {
+        // 内容身份不随移动变化；视觉源必须绑定这次实际输入的位置。
+        video.url = path.display().to_string();
+        video.webpage_url = video.url.clone();
+        video.title = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        video.platform = crate::models::Platform::Local;
+        save_cache(item_cache, &video, &trans, &meta)?;
         return Ok(make_analyze_result(&video, &trans, item_cache, key));
     }
 
@@ -209,7 +240,7 @@ async fn run_local_pipeline(
             .unwrap_or_else(|| "本地文件".into()),
         url: path.display().to_string(),
         duration,
-        platform: crate::models::Platform::Bilibili,
+        platform: crate::models::Platform::Local,
         webpage_url: path.display().to_string(),
     };
 
@@ -283,11 +314,10 @@ pub fn compact_mcp_payload(result: &AnalyzeResult, max_inline: usize) -> serde_j
     let sample = trans
         .map(|t| t.segments.iter().take(5).cloned().collect::<Vec<_>>())
         .unwrap_or_default();
-    let text = trans
-        .map(|t| format_inline_text(t, result.truncated))
-        .unwrap_or_default();
-    let inline = if text.len() > max_inline {
-        format!("{}...", truncate_utf8(&text, max_inline))
+    let text = trans.map(|t| t.full_text()).unwrap_or_default();
+    let truncated = text.chars().count() > max_inline;
+    let inline = if truncated {
+        format!("{}...", text.chars().take(max_inline).collect::<String>())
     } else {
         text
     };
@@ -304,7 +334,7 @@ pub fn compact_mcp_payload(result: &AnalyzeResult, max_inline: usize) -> serde_j
         "transcript_uri": result.transcript_uri,
         "text_file": result.transcript_path,
         "cache_dir": result.cache_dir,
-        "truncated": result.truncated,
+        "truncated": truncated,
         "sample_segments": sample,
         "has_video": true,
         "text": inline,
@@ -329,4 +359,9 @@ pub fn full_mcp_payload(result: &AnalyzeResult) -> serde_json::Value {
         "segments": trans.map(|t| t.segments.clone()),
         "text": trans.map(|t| format_inline_text(t, result.truncated)),
     })
+}
+
+fn processing_key(ctx: &PipelineContext, media: &str) -> Result<String, AvrError> {
+    let fingerprint = crate::asr::engine::processing_fingerprint(&ctx.root, &ctx.config)?;
+    Ok(format!("{media}-asr-{}", &fingerprint[..24]))
 }

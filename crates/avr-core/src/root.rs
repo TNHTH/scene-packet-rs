@@ -92,7 +92,9 @@ pub fn resolve_data_root(exe_dir: Option<&Path>) -> Result<DataRoot, AvrError> {
         let portable = dir.join(PORTABLE_MARKER);
         if portable.exists() {
             info!("便携模式: {}", dir.display());
-            return Ok(DataRoot { path: dir.to_path_buf() });
+            return Ok(DataRoot {
+                path: dir.to_path_buf(),
+            });
         }
     }
 
@@ -140,7 +142,26 @@ pub fn migrate_data_root(old: &Path, new: &Path) -> Result<(), AvrError> {
     if old == new {
         return Ok(());
     }
+    let old_abs = old.canonicalize().map_err(io_err)?;
     fs::create_dir_all(new).map_err(io_err)?;
+    let new_abs = new.canonicalize().map_err(io_err)?;
+    if old_abs == new_abs {
+        return Ok(());
+    }
+    if new_abs.starts_with(&old_abs) || old_abs.starts_with(&new_abs) {
+        return Err(AvrError::new(
+            ErrorCode::IoError,
+            "源目录与目标目录不能相互包含",
+            "选择独立的空目录。",
+        ));
+    }
+    if fs::read_dir(new).map_err(io_err)?.next().is_some() {
+        return Err(AvrError::new(
+            ErrorCode::IoError,
+            "目标目录非空，未覆盖已有数据",
+            "选择空目录。",
+        ));
+    }
 
     let lock = old.join(".migrate.lock");
     if lock.exists() {
@@ -152,23 +173,23 @@ pub fn migrate_data_root(old: &Path, new: &Path) -> Result<(), AvrError> {
     }
     fs::write(&lock, "1").map_err(io_err)?;
 
-    copy_dir_recursive(old, new)?;
-
-    let old_count = count_files(old)?;
-    let new_count = count_files(new)?;
-    if new_count < old_count {
-        fs::remove_file(&lock).ok();
-        return Err(AvrError::new(
-            ErrorCode::IoError,
-            format!("迁移校验失败: 旧={old_count} 新={new_count}"),
-            "检查目标磁盘空间后重试。",
-        ));
-    }
-
-    set_root_pointer(new)?;
-    fs::remove_file(&lock).ok();
-    info!("迁移完成: {} -> {}", old.display(), new.display());
-    Ok(())
+    let result = (|| {
+        copy_dir_recursive(old, new)?;
+        let old_count = count_files(old)?;
+        let new_count = count_files(new)?;
+        if new_count < old_count {
+            return Err(AvrError::new(
+                ErrorCode::IoError,
+                format!("迁移校验失败: 旧={old_count} 新={new_count}"),
+                "检查目标目录。",
+            ));
+        }
+        set_root_pointer(new)?;
+        info!("迁移完成: {} -> {}", old.display(), new.display());
+        Ok(())
+    })();
+    fs::remove_file(&lock).map_err(io_err)?;
+    result
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), AvrError> {
@@ -197,6 +218,9 @@ fn count_files(dir: &Path) -> Result<usize, AvrError> {
     }
     for entry in fs::read_dir(dir).map_err(io_err)? {
         let entry = entry.map_err(io_err)?;
+        if entry.file_name() == ".migrate.lock" {
+            continue;
+        }
         if entry.path().is_dir() {
             n += count_files(&entry.path())?;
         } else {
@@ -213,7 +237,23 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn migration_copy_count_excludes_lock() {
+        let old = TempDir::new().unwrap();
+        let new = TempDir::new().unwrap();
+        fs::write(old.path().join(".migrate.lock"), "1").unwrap();
+        fs::write(old.path().join("config.toml"), "test").unwrap();
+        copy_dir_recursive(old.path(), new.path()).unwrap();
+        assert_eq!(
+            count_files(old.path()).unwrap(),
+            count_files(new.path()).unwrap()
+        );
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
     fn resolve_from_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().to_string_lossy().to_string();
         env::set_var("AVR_DATA_ROOT", &path);
@@ -224,6 +264,7 @@ mod tests {
 
     #[test]
     fn resolve_portable() {
+        let _guard = ENV_LOCK.lock().unwrap();
         env::remove_var("AVR_DATA_ROOT");
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(PORTABLE_MARKER), "").unwrap();

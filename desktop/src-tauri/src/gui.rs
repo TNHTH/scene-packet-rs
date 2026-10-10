@@ -1,5 +1,6 @@
 //! Tauri GUI。
 
+use crate::state::SharedState;
 use avr_core::config::{load_config, save_config, AppConfig};
 use avr_core::jobs::JobProgress;
 use avr_core::pipeline::{analyze_url, compact_mcp_payload, transcribe_local};
@@ -8,10 +9,11 @@ use avr_core::tools::install::download_and_install;
 use avr_core::tools::manifest::{builtin_licenses, builtin_manifests};
 use avr_core::tools::registry::ToolRegistry;
 use serde::Serialize;
-use crate::state::SharedState;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
+#[cfg(windows)]
+use tauri::Manager;
+use tauri::{Emitter, State};
 
 #[derive(Serialize)]
 struct ToolStatusDto {
@@ -61,9 +63,9 @@ pub fn run_gui() -> Result<(), String> {
                 start_transcribe,
                 start_analyze,
             ])
-            .setup(|app| {
+            .setup(|_app| {
                 #[cfg(windows)]
-                apply_window_effects(app);
+                apply_window_effects(_app);
                 Ok(())
             })
             .run(tauri::generate_context!())
@@ -102,9 +104,14 @@ fn set_data_root(path: String, state: State<SharedState>) -> Result<String, Stri
         path: PathBuf::from(path),
     };
     new_root.ensure_layout().map_err(|e| e.format_user())?;
-    set_root_pointer(&new_root.path).map_err(|e| e.format_user())?;
+    let new_config = load_config(&new_root).map_err(|e| e.format_user())?;
+
     let display = new_root.path.display().to_string();
-    *state.root.lock() = new_root;
+    let mut root = state.root.lock();
+    let mut config = state.config.lock();
+    set_root_pointer(&new_root.path).map_err(|e| e.format_user())?;
+    *root = new_root;
+    *config = new_config;
     Ok(display)
 }
 
@@ -114,13 +121,19 @@ fn get_config(state: State<SharedState>) -> AppConfig {
 }
 
 #[tauri::command]
-fn save_app_config(cfg: AppConfig, app: tauri::AppHandle, state: State<SharedState>) -> Result<(), String> {
+fn save_app_config(
+    cfg: AppConfig,
+    _app: tauri::AppHandle,
+    state: State<SharedState>,
+) -> Result<(), String> {
+    #[cfg(windows)]
     let enable_mica = cfg.ui.enable_transparency;
-    save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
+    let root = state.root.lock();
+    save_config(&root, &cfg).map_err(|e| e.format_user())?;
     *state.config.lock() = cfg;
     #[cfg(windows)]
     if enable_mica {
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = _app.get_webview_window("main") {
             use window_vibrancy::apply_mica;
             let _ = apply_mica(&window, None);
         }
@@ -130,8 +143,8 @@ fn save_app_config(cfg: AppConfig, app: tauri::AppHandle, state: State<SharedSta
 
 #[tauri::command]
 fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
-    let cfg = state.config.lock().clone();
-    let reg = ToolRegistry::new(&*state.root.lock(), &cfg);
+    let ctx = state.pipeline_ctx();
+    let reg = ToolRegistry::new(&ctx.root, &ctx.config);
     let manifests = builtin_manifests();
     ["ffmpeg", "ffprobe", "yt-dlp", "whisper"]
         .iter()
@@ -154,6 +167,7 @@ fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
 
 #[tauri::command]
 fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Result<(), String> {
+    let root = state.root.lock();
     let mut cfg = state.config.lock().clone();
     match tool_id.as_str() {
         "ffmpeg" => cfg.tools.ffmpeg_path = path,
@@ -162,7 +176,7 @@ fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Re
         "whisper" => cfg.tools.whisper_cli_path = path,
         _ => return Err("未知工具".into()),
     }
-    save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
+    save_config(&root, &cfg).map_err(|e| e.format_user())?;
     *state.config.lock() = cfg;
     Ok(())
 }
@@ -171,9 +185,7 @@ fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Re
 async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> Result<String, String> {
     let manifest = builtin_manifests()
         .into_iter()
-        .find(|m| {
-            tool_id == "whisper" && m.id.starts_with("whisper") || m.id == tool_id
-        })
+        .find(|m| tool_id == "whisper" && m.id.starts_with("whisper") || m.id == tool_id)
         .ok_or_else(|| "未找到安装清单".to_string())?;
     let root_path = state.root.lock().path.clone();
     download_and_install(&manifest, &root_path)
@@ -203,11 +215,14 @@ async fn start_transcribe(
     let ctx = state.pipeline_ctx();
     let app_handle = app.clone();
     tokio::spawn(async move {
-        let _ = app_handle.emit("job-progress", JobProgress::Stage {
-            media_key: path.clone(),
-            stage: "starting".into(),
-            percent: 0,
-        });
+        let _ = app_handle.emit(
+            "job-progress",
+            JobProgress::Stage {
+                media_key: path.clone(),
+                stage: "starting".into(),
+                percent: 0,
+            },
+        );
         let result = transcribe_local(&ctx, PathBuf::from(&path).as_path()).await;
         match result {
             Ok(r) => {

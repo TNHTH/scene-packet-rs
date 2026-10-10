@@ -11,6 +11,7 @@ pub mod frames;
 pub mod jobs;
 pub mod media;
 pub mod models;
+pub mod packet;
 pub mod paths;
 pub mod pipeline;
 pub mod process;
@@ -20,4 +21,4 @@ pub mod tools;
 
 pub const VERSION: &str = "2.0.0";
 
-pub use error::{AvrError, ErrorCode, unsupported_url};
+pub use error::{unsupported_url, AvrError, ErrorCode};

@@ -3,76 +3,76 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { getCurrentWebview } from '@tauri-apps/api/webview';
   import { open } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
 
-  let tab = 'transcribe';
-  let input = '';
-  let progress = '';
-  let result = '';
-  let error = '';
-  let dataRoot = '';
-  let tools = [];
-  let showWizard = false;
-  let wizardPath = '';
-  let enableTransparency = true;
-  let licenses = [];
-  let installing = '';
+  let tab = $state('transcribe');
+  let input = $state('');
+  let progress = $state('');
+  let result = $state('');
+  let error = $state('');
+  let dataRoot = $state('');
+  let tools = $state([]);
+  let showWizard = $state(false);
+  let wizardPath = $state('');
+  let enableTransparency = $state(true);
+  let licenses = $state([]);
+  let installing = $state('');
 
-  onMount(async () => {
-    showWizard = await invoke('needs_setup');
-    dataRoot = await invoke('get_data_root');
-    wizardPath = dataRoot;
-    tools = await invoke('list_tools');
-    const cfg = await invoke('get_config');
-    enableTransparency = cfg.ui?.enable_transparency ?? true;
-    licenses = await invoke('list_licenses');
-    await listen('job-progress', (e) => {
-      progress = JSON.stringify(e.payload);
-    });
-    await listen('job-done', (e) => {
-      progress = '';
-      result = typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload, null, 2);
-      error = '';
-    });
-    await listen('job-error', (e) => {
-      progress = '';
-      error = String(e.payload);
-    });
+  onMount(() => {
+    let disposed = false;
+    const subscriptions = [];
+    const keep = (unlisten) => { if (disposed) unlisten(); else subscriptions.push(unlisten); };
+    async function initialize() {
+      keep(await listen('job-progress', e => { progress = JSON.stringify(e.payload); }));
+      keep(await listen('job-done', e => { progress = ''; result = typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload, null, 2); error = ''; }));
+      keep(await listen('job-error', e => { progress = ''; error = String(e.payload); }));
+      keep(await getCurrentWebview().onDragDropEvent(e => {
+        if (e.payload.type === 'drop' && e.payload.paths.length) { input = e.payload.paths[0]; tab = 'transcribe'; }
+      }));
+      showWizard = await invoke('needs_setup');
+      dataRoot = await invoke('get_data_root'); wizardPath = dataRoot;
+      tools = await invoke('list_tools');
+      const cfg = await invoke('get_config'); enableTransparency = cfg.ui?.enable_transparency ?? true;
+      licenses = await invoke('list_licenses');
+    }
+    initialize().catch(e => { error = String(e); });
+    return () => { disposed = true; subscriptions.forEach(unlisten => unlisten()); };
   });
 
   async function run() {
     error = '';
     result = '';
     progress = '处理中…';
-    if (tab === 'transcribe') {
-      await invoke('start_transcribe', { path: input });
-    } else {
-      await invoke('start_analyze', { url: input });
-    }
+    try {
+      if (tab === 'transcribe') await invoke('start_transcribe', { path: input });
+      else await invoke('start_analyze', { url: input });
+    } catch (e) { error = String(e); progress = ''; }
   }
 
-  function onDrop(e) {
-    e.preventDefault();
-    const f = e.dataTransfer?.files?.[0];
-    if (f?.path) {
-      input = f.path;
-      tab = 'transcribe';
-    }
+  async function pickMedia() {
+    try { const selected = await open({ multiple: false }); if (typeof selected === 'string') { input = selected; tab = 'transcribe'; } }
+    catch (e) { error = String(e); }
   }
 
   async function confirmWizard() {
+    try {
     dataRoot = await invoke('set_data_root', { path: wizardPath });
     showWizard = false;
     tools = await invoke('list_tools');
+    const cfg = await invoke('get_config'); enableTransparency = cfg.ui?.enable_transparency ?? true;
+    } catch (e) { error = String(e); }
   }
 
   async function pickTool(toolId) {
+    try {
     const selected = await open({ multiple: false });
     if (selected) {
       await invoke('set_tool_path', { toolId, path: selected });
       tools = await invoke('list_tools');
     }
+    } catch (e) { error = String(e); }
   }
 
   async function installTool(toolId) {
@@ -89,9 +89,11 @@
   }
 
   async function toggleTransparency() {
+    try {
     const cfg = await invoke('get_config');
     cfg.ui.enable_transparency = enableTransparency;
     await invoke('save_app_config', { cfg });
+    } catch (e) { error = String(e); }
   }
 </script>
 
@@ -101,7 +103,8 @@
       <h1>欢迎使用 ScenePacket</h1>
       <p class="hint">选择数据根目录。ffmpeg、模型与缓存将存放在此，删除文件夹即可完全卸载。</p>
       <input bind:value={wizardPath} placeholder="D:\AIVideoReader" />
-      <button class="primary" on:click={confirmWizard}>继续</button>
+      <button class="primary" onclick={confirmWizard}>继续</button>
+      {#if error}<pre class="error">{error}</pre>{/if}
     </div>
   </div>
 {/if}
@@ -111,23 +114,25 @@
 </div>
 
 <nav class="sidebar">
-  <button class:active={tab === 'transcribe'} on:click={() => (tab = 'transcribe')}>转写</button>
-  <button class:active={tab === 'url'} on:click={() => (tab = 'url')}>链接</button>
-  <button class:active={tab === 'tools'} on:click={() => (tab = 'tools')}>工具</button>
-  <button class:active={tab === 'settings'} on:click={() => (tab = 'settings')}>设置</button>
-  <button class:active={tab === 'about'} on:click={() => (tab = 'about')}>关于</button>
+  <button class:active={tab === 'transcribe'} onclick={() => (tab = 'transcribe')}>转写</button>
+  <button class:active={tab === 'url'} onclick={() => (tab = 'url')}>链接</button>
+  <button class:active={tab === 'tools'} onclick={() => (tab = 'tools')}>工具</button>
+  <button class:active={tab === 'settings'} onclick={() => (tab = 'settings')}>设置</button>
+  <button class:active={tab === 'about'} onclick={() => (tab = 'about')}>关于</button>
 </nav>
 
-<main class="content" on:dragover|preventDefault on:drop={onDrop}>
+<main class="content">
+  {#if error && tab !== 'transcribe' && tab !== 'url'}<pre class="error">{error}</pre>{/if}
   {#if tab === 'transcribe' || tab === 'url'}
     <section class="card">
       <h1>{tab === 'transcribe' ? '拖入音视频文件' : '粘贴 B站/抖音链接'}</h1>
-      <p class="hint">总结由 Cursor/Codex 完成；本程序只提取文本。</p>
+      <p class="hint">总结由 Cursor/Codex 完成；本页提取文本；完整图文包可通过 CLI / MCP 导出。</p>
       <input
         bind:value={input}
         placeholder={tab === 'transcribe' ? 'D:\\video.mp4' : 'https://www.bilibili.com/video/BV…'}
       />
-      <button class="primary" on:click={run} disabled={!input}>开始</button>
+      {#if tab === 'transcribe'}<button onclick={pickMedia}>选择文件</button>{/if}
+      <button class="primary" onclick={run} disabled={!input || !!progress}>开始</button>
       {#if progress}<p class="status">{progress}</p>{/if}
       {#if error}<pre class="error">{error}</pre>{/if}
       {#if result}<pre class="result">{result}</pre>{/if}
@@ -143,11 +148,11 @@
             <span class="ver">{t.version || ''}</span>
             {#if !t.ready}
               {#if t.download_url}
-                <button class="link-btn" disabled={installing === t.id} on:click={() => installTool(t.id)}>
+                <button class="link-btn" disabled={installing === t.id} onclick={() => installTool(t.id)}>
                   {installing === t.id ? '安装中…' : '安装'}
                 </button>
               {/if}
-              <button class="link-btn" on:click={() => pickTool(t.id)}>选择已有</button>
+              <button class="link-btn" onclick={() => pickTool(t.id)}>选择已有</button>
             {/if}
           </li>
         {/each}
@@ -158,7 +163,7 @@
       <h1>设置</h1>
       <p>数据根：<code>{dataRoot}</code></p>
       <label class="toggle">
-        <input type="checkbox" bind:checked={enableTransparency} on:change={toggleTransparency} />
+        <input type="checkbox" bind:checked={enableTransparency} onchange={toggleTransparency} />
         启用透明效果（Mica，Win11）
       </label>
       <p class="hint">模型放入 <code>{dataRoot}\models\</code>，默认 ggml-large-v3-turbo.bin</p>
@@ -206,7 +211,7 @@
     display: flex;
     flex-direction: column;
   }
-  #app {
+  :global(#app) {
     display: grid;
     grid-template-columns: 140px 1fr;
     grid-template-rows: 36px 1fr;
@@ -261,7 +266,6 @@
     color: var(--label-secondary);
     margin-bottom: var(--space-4);
   }
-  input[type='text'],
   input:not([type]) {
     width: 100%;
     padding: var(--space-3);

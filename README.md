@@ -7,8 +7,8 @@ ScenePacket 从本地文件、B 站和抖音视频中提取带时间轴的字幕
 
 产品副标题：**Turn video into agent-ready context.**
 
-当前可执行文件仍叫 `avr.exe`，以兼容已有脚本和 MCP 配置；后续可在独立版本中提供
-`scenepacket.exe` 别名。
+桌面入口保留 `avr.exe`；新增独立的 `scene-packet` CLI/MCP，无 GUI 环境可直接构建运行。
+本地视频转写、全片截图、离线图文包与 VAD 配置见 [本地工作流](docs/local-video-workflow.md)。
 
 建议 GitHub 仓库 slug 使用 `scene-packet-rs`。当前远端地址仍为
 `TNHTH/ai-video-reader-rs`，远端仓库重命名与 remote URL 同步需单独执行。
@@ -32,13 +32,22 @@ ScenePacket 从本地文件、B 站和抖音视频中提取带时间轴的字幕
 | `avr.exe analyze <url>` | 分析 B站/抖音链接 |
 | `avr.exe mcp-config` | 打印可粘贴的 MCP JSON |
 | `avr.exe doctor` | 数据根与工具状态 |
+| `scene-packet packet <path> --output <dir>` | 全片图文素材包 |
+| `scene-packet frames <path> --output <dir> --times 10,20` | 指定时间补帧 |
+
+上述子命令与 `--mcp` 在 `scene-packet` 和 `avr.exe` 间共用实现。
 
 ## 构建
 
 ```powershell
 cd 项目\ai-video-reader-rs
-cargo build --release
-cd desktop\ui && npm install && npm run build
+cargo build --release -p avr-cli
+# 桌面构建需对应平台的 Tauri 依赖
+cd desktop\ui
+npm ci
+npm run build
+cd ../..
+cargo build --release -p avr
 ```
 
 发布包：
@@ -51,7 +60,7 @@ cd desktop\ui && npm install && npm run build
 
 ## 数据根
 
-优先级：`AVR_DATA_ROOT` > exe 同目录 `avr.portable` > `%APPDATA%\AIVideoReader\root.txt`
+优先级：`--data-root` > `AVR_DATA_ROOT` > exe 同目录 `avr.portable` > 系统指针。Windows 为 `%APPDATA%/AIVideoReader/root.txt`；Linux 为 `$XDG_DATA_HOME/ScenePacket/root.txt` 或 `~/.local/share/ScenePacket/root.txt`。
 
 其中 `AIVideoReader` 是旧版本数据目录名，ScenePacket 会继续读取它，避免升级时丢失已有
 配置、模型和缓存；新安装仍可按本节路径规划使用。
@@ -70,8 +79,9 @@ cd desktop\ui && npm install && npm run build
 ## MCP 工具
 
 - `analyze_media` / `analyze_video`（别名）— 默认 `response_mode=compact`
-- `list_visual_hints` — 视觉候选时间点（Phase B）
-- `extract_frames` — 截帧，默认 `delivery=path`
+- `list_visual_hints` — 全片覆盖与视觉候选时间点
+- `extract_frames` — 截帧，默认 `delivery=path`，`inline/both` 同时返回可视图片块
+- `export_packet` — 本地视频导出 Markdown、离线 HTML、截图、字幕及来源清单
 
 接入 Cursor：运行 `avr mcp-config`，将 JSON 合并到 `.cursor/mcp.json`。
 
@@ -139,8 +149,7 @@ avr.exe analyze "https://v.douyin.com/xxxx/"
 ## 开发
 
 ```powershell
-cargo test -p avr-core
-cargo clippy -- -D warnings
+python tools/check.py
 ```
 
 ## Legacy

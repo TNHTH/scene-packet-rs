@@ -113,29 +113,33 @@ pub async fn extract_frames(
     width: u32,
     delivery: FrameDelivery,
 ) -> Result<Vec<CapturedFrame>, AvrError> {
-    std::fs::create_dir_all(frames_dir).ok();
+    if width == 0 {
+        return Err(crate::error::process_failed("图片宽度必须大于零"));
+    }
+    let probe = crate::ffmpeg::probe_media(ctx, video).await?;
+    let times = validate_times(times, probe.duration)?;
+    std::fs::create_dir_all(frames_dir)
+        .map_err(|e| crate::error::process_failed(&e.to_string()))?;
     let mut out = Vec::new();
     for t in times {
-        let name = format!("t_{:06.0}.jpg", t * 1000.0);
+        let name = format!("t_{:09.0}.jpg", t * 1000.0);
         let path = frames_dir.join(&name);
-        capture_frame(ctx, video, *t, &path, width).await?;
-        let uri = crate::paths::to_file_uri(&path);
-        let ts = format_timestamp(*t);
-        let markdown = format!("![{ts}](images/{name})");
-        let base64_data = match delivery {
+        capture_frame(ctx, video, t, &path, width).await?;
+        let dimensions = crate::ffmpeg::probe_media(ctx, &path).await?;
+        let base64 = match delivery {
             FrameDelivery::Path => None,
-            FrameDelivery::Inline | FrameDelivery::Both => std::fs::read(&path)
-                .ok()
-                .map(|b| STANDARD.encode(&b)),
+            _ => Some(STANDARD.encode(
+                std::fs::read(&path).map_err(|e| crate::error::process_failed(&e.to_string()))?,
+            )),
         };
         out.push(CapturedFrame {
-            time: *t,
+            time: t,
             path: path.display().to_string(),
-            file_uri: uri,
-            markdown,
-            width,
-            height: 0,
-            base64: base64_data,
+            file_uri: crate::paths::to_file_uri(&path),
+            markdown: format!("![{}](images/{name})", format_timestamp(t)),
+            width: dimensions.width,
+            height: dimensions.height,
+            base64,
         });
     }
     Ok(out)
@@ -149,42 +153,140 @@ pub async fn detect_scene_hints(
     detect_scenes(ctx, video, cfg.ui.scene_threshold).await
 }
 
-/// URL 视觉源四级 fallback 入口。
+/// 兼容旧调用方，但只返回从零开始的完整时间轴。
 pub async fn resolve_visual_source(
     ytdlp: &crate::extract::ytdlp::YtDlpExtractor,
     _ffmpeg: &FfmpegContext,
     url: &str,
     cache_dir: &Path,
-    timestamp: f64,
+    _timestamp: f64,
 ) -> Result<PathBuf, AvrError> {
-    let local_video = cache_dir.join("source.mp4");
-    if local_video.exists() {
-        return Ok(local_video);
+    let (info, _) = ytdlp.extract_metadata_with_info(url).await?;
+    if !info.duration.is_finite() || info.duration <= 0.0 {
+        return Err(crate::error::process_failed(
+            "远程视频时长未知，无法建立完整视觉源",
+        ));
     }
-    let proxy = cache_dir.join("visual_proxy.mp4");
-    if proxy.exists() {
-        return Ok(proxy);
+    let proxy = cache_dir.join("visual_full.mp4");
+    if !proxy.is_file() {
+        ytdlp
+            .download_section(url, 0.0, info.duration, &proxy)
+            .await?;
     }
+    Ok(proxy)
+}
 
-    let clip = cache_dir.join("clip.mp4");
-    let start = (timestamp - 3.0).max(0.0);
-    let end = timestamp + 3.0;
-    if ytdlp.download_section(url, start, end, &clip).await.is_ok() && clip.exists() {
-        return Ok(clip);
+/// 自动候选限制在可解码的最后一帧；用户手动补帧保持原时间，失败会明确返回。
+pub fn clamp_automatic_times(times: &mut [f64], extra: &[f64], probe: &crate::ffmpeg::MediaProbe) {
+    let last = (probe.duration - 1.0 / probe.frame_rate).max(0.0);
+    for time in times {
+        if *time > last && !extra.iter().any(|t| (*t - *time).abs() < 0.001) {
+            *time = (last * 1000.0).floor() / 1000.0;
+        }
     }
+}
 
-    if ytdlp
-        .download_section(url, 0.0, 3600.0, &proxy)
-        .await
-        .is_ok()
-        && proxy.exists()
+/// 统一到输出精度，避免重复记录及同名截图相互覆盖。
+pub fn validate_times(times: &[f64], duration: f64) -> Result<Vec<f64>, AvrError> {
+    if !duration.is_finite() || duration <= 0.0 {
+        return Err(crate::error::process_failed("视频时长无效"));
+    }
+    let mut millis = Vec::new();
+    for t in times {
+        if !t.is_finite() || *t < 0.0 || *t >= duration {
+            return Err(crate::error::process_failed(
+                "截图时间必须在 [0, 视频时长) 内",
+            ));
+        }
+        let ms = (t * 1000.0).round() as u64;
+        if ms as f64 / 1000.0 >= duration {
+            return Err(crate::error::process_failed("截图时间舍入后超过视频边界"));
+        }
+        millis.push(ms);
+    }
+    millis.sort_unstable();
+    millis.dedup();
+    Ok(millis.into_iter().map(|t| t as f64 / 1000.0).collect())
+}
+
+/// 均匀覆盖先占预算，其余预算留给场景候选；明确指定的补帧不静默丢弃。
+pub fn sampling_times(
+    duration: f64,
+    interval: f64,
+    limit: usize,
+    extra: &[f64],
+    scenes: &[(f64, f32)],
+) -> Result<Vec<f64>, AvrError> {
+    if !duration.is_finite()
+        || duration <= 0.0
+        || !interval.is_finite()
+        || interval <= 0.0
+        || !(2..=10000).contains(&limit)
     {
-        return Ok(proxy);
+        return Err(crate::error::process_failed(
+            "采样间隔必须大于零，预算须在2到10000之间",
+        ));
     }
+    let extras = validate_times(extra, duration)?;
+    if extras.len() + 2 > limit {
+        return Err(crate::error::process_failed(
+            "指定补帧超过预算，请增加 max-frames",
+        ));
+    }
+    let remaining = limit - extras.len();
+    let desired = (duration / interval).ceil().min(10000.0) as usize + 1;
+    let count = desired.min(remaining).max(2);
+    let last = (duration - 0.05).max(0.0);
+    let mut times = extras;
+    for i in 0..count {
+        times.push((last * i as f64 / (count - 1) as f64 * 1000.0).floor() / 1000.0);
+    }
+    times = validate_times(&times, duration)?;
+    for (t, _) in scenes {
+        if times.len() >= limit {
+            break;
+        }
+        let t = (*t + 0.1).min(last);
+        if t >= 0.0 && t.is_finite() && times.iter().all(|x| (*x - t).abs() > 0.1) {
+            times.push(t);
+        }
+    }
+    validate_times(&times, duration)
+}
 
-    Err(crate::error::AvrError::new(
-        crate::error::ErrorCode::VisualProxyFailed,
-        "无法获取视频画面源",
-        "检查网络与 Cookie 设置后重试。",
-    ))
+/// 复用本地原片和已有完整代理，不把六秒剪辑错当作原视频时间轴。
+pub async fn cached_visual_source(
+    ctx: &crate::pipeline::PipelineContext,
+    key: &str,
+) -> Result<PathBuf, AvrError> {
+    if !crate::media::valid_media_key(key) {
+        return Err(crate::error::process_failed("无效 media_key"));
+    }
+    let cache = crate::config::effective_cache_dir(&ctx.root, &ctx.config).join(key);
+    let (video, _, _) = crate::cache::load_cached_transcript(&cache)?
+        .ok_or_else(|| crate::error::process_failed("没有此媒体缓存"))?;
+    if video.platform == crate::models::Platform::Local {
+        let path = PathBuf::from(&video.url);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(crate::error::process_failed("本地原视频已移动或不存在"));
+    }
+    for name in ["source.mp4", "visual_full.mp4"] {
+        let path = cache.join(name);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    let extractor = crate::extract::ytdlp::YtDlpExtractor::new(&ctx.root, &ctx.config)?;
+    if video.duration <= 0.0 {
+        return Err(crate::error::process_failed(
+            "远程视频时长未知，无法安全建立完整视觉源",
+        ));
+    }
+    let path = cache.join("visual_full.mp4");
+    extractor
+        .download_section(&video.url, 0.0, video.duration, &path)
+        .await?;
+    Ok(path)
 }

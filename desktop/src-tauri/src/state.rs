@@ -13,8 +13,9 @@ pub struct AppState {
 
 impl AppState {
     pub fn pipeline_ctx(&self) -> PipelineContext {
+        let root = self.root.lock();
         PipelineContext {
-            root: self.root.lock().clone(),
+            root: root.clone(),
             config: self.config.lock().clone(),
         }
     }
