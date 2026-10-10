@@ -1,0 +1,18 @@
+[package]
+name = "avr-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "ScenePacket MCP 输出拼装（纯函数）"
+
+[dependencies]
+avr-core = { path = "../avr-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+avr-core = { path = "../avr-core", features = ["test-support"] }
+tokio.workspace = true
+tempfile = "3"
+insta = { version = "1", features = ["json", "redactions"] }
+tiktoken-rs = "0.7"

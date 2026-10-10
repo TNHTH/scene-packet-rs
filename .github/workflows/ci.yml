@@ -23,9 +23,18 @@ jobs:
           components: rustfmt, clippy
       - run: rustup override set ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
+      - name: Install ffmpeg (P3 baseline)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: cargo fmt --all -- --check
-      - run: cargo clippy -p avr-core --all-targets -- -D warnings
+      - run: cargo clippy -p avr-core -p avr-mcp --all-targets -- -D warnings
       - run: cargo test -p avr-core
+      - name: avr-mcp tests (ffmpeg baseline must run)
+        env:
+          AVR_REQUIRE_FFMPEG: "1"
+        run: cargo test -p avr-mcp -- --nocapture
+      - name: Token stats (o200k_base, reference only)
+        if: matrix.toolchain == 'stable'
+        run: cargo test -p avr-mcp --test baseline -- --ignored --nocapture token_stats
 
   desktop:
     name: desktop (Windows clippy / test)

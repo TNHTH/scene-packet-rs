@@ -146,16 +146,20 @@ impl Tools for RealTools {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod fake {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod fake {
     //! 测试用假实现：记录调用次数，按配置返回字幕或 ASR 结果。
+    //! 下游 crate 通过 `avr-core` 的 `test-support` feature 使用。
 
     use super::*;
     use crate::models::{Platform, TranscriptSegment, TranscriptSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
-    pub(crate) struct FakeTools {
+    pub struct FakeTools {
+        /// 固定的转写结果；None 时返回内置的单句转写。
+        pub transcript: Option<Transcript>,
         /// true 时在线视频有字幕；false 时走 ASR。
         pub with_subtitles: bool,
         pub metadata_calls: AtomicUsize,
@@ -164,6 +168,18 @@ pub(crate) mod fake {
         pub audio_calls: AtomicUsize,
         /// whisper 版本，测试可在两次调用之间修改。
         pub asr_version: parking_lot::Mutex<String>,
+    }
+
+    impl FakeTools {
+        fn make(&self, source: TranscriptSource) -> Transcript {
+            match &self.transcript {
+                Some(t) => Transcript {
+                    source,
+                    ..t.clone()
+                },
+                None => transcript(source),
+            }
+        }
     }
 
     fn transcript(source: TranscriptSource) -> Transcript {
@@ -220,7 +236,7 @@ pub(crate) mod fake {
         ) -> Result<Option<Transcript>, AvrError> {
             Ok(self
                 .with_subtitles
-                .then(|| transcript(TranscriptSource::Subtitle)))
+                .then(|| self.make(TranscriptSource::Subtitle)))
         }
 
         async fn download_audio(
@@ -248,7 +264,7 @@ pub(crate) mod fake {
             _: Option<&str>,
         ) -> Result<Transcript, AvrError> {
             self.transcribe_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(transcript(TranscriptSource::Asr))
+            Ok(self.make(TranscriptSource::Asr))
         }
     }
 }

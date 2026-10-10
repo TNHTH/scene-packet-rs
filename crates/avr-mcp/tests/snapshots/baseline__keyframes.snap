@@ -1,0 +1,18 @@
+---
+source: crates/avr-mcp/tests/baseline.rs
+expression: keyframes
+---
+{
+  "all_files_exist": true,
+  "all_times_within_a_segment": true,
+  "count_in_range_1_to_8": true,
+  "fields": [
+    "file_uri",
+    "height",
+    "markdown",
+    "path",
+    "time",
+    "width"
+  ],
+  "scene_cuts_detected_at_least_2": true
+}
