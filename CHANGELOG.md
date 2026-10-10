@@ -17,5 +17,6 @@
 - 结果：avr-core `clippy --all-targets -D warnings` 零警告，测试 15 → 16 全部通过；Tauri crate 依赖 Windows CI 验证。
 
 ### 进行中
-- P0-3 `jobs.rs` 锁改为原子创建 + RAII 释放（执行）。
+- P0-3 `d77a44d` 任务锁改用 fs4 建议锁 + RAII 守卫，修复等待方误报成功，测试 16 → 21（待验收，见 ADR 0004）。
+- P0-4 `Platform::Local`（执行）。
 - P1 架构设计 `docs/architecture/p1-design.md`（架构师）。
