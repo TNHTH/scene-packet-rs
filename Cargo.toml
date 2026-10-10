@@ -6,6 +6,7 @@ members = ["crates/avr-core", "desktop/src-tauri"]
 version = "2.0.0"
 edition = "2021"
 license = "MIT"
+rust-version = "1.88"
 authors = ["ScenePacket contributors"]
 
 [workspace.dependencies]

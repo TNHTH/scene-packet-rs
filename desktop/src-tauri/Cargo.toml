@@ -2,6 +2,7 @@
 name = "avr"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "ScenePacket - 视频上下文包，单 exe 桌面/MCP/CLI"
 
 [[bin]]
