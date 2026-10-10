@@ -9,3 +9,5 @@
 5. P1-5 MCP payload 拼装移到 `desktop/src-tauri/src/mcp.rs`，三入口都走 `analyze`（仅 Windows CI 可验证，放最后）。
 
 依据：研究员关于 thiserror/anyhow 分层与 Tauri 状态管理的调研（`docs/research/`）。
+
+API 稳定性约束（架构师、研究员补充）：`analyze` 签名在 P1-1 一次定死；`Deps`、`Options` 字段私有，`Deps::new(jobs)` 构造、`with_tools(...)` 等 builder 扩展、测试用 `Deps::for_test()`；`Options` 实现 `Default`。
