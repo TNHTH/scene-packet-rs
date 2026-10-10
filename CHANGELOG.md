@@ -38,6 +38,13 @@
 **未验证**：`App.svelte` 与 GUI 实际行为需在 Windows 上手动运行确认。
 
 ### 进行中
-- P2-3 转写缓存校验 ASR 模型、版本与 `cache_schema`（最小版本，见 ADR 0006）。
-- P2-2 抽出 URL 与本地两条路径共用的“抽音频、转写、保存缓存”阶段函数。
+### P2 缓存与流水线去重（待验收）
+- `2b99f09` P2-3 `CACHE_SCHEMA = 2` 与 `AsrFingerprint` 写入 `metadata.json`，格式版本或 ASR 模型/版本不符即视为未命中（字幕缓存不受影响）；`Tools::version()`，`RealTools` 用可执行文件"大小:修改时间"；音频先写临时文件再改名。
+- `15fa74a` P2-2 两条路径共用 `transcribe_and_save`，FakeTools 覆盖 ASR、复用音频、字幕三种情况；暂用 `#[allow(clippy::too_many_arguments)]`，P3-2 收成 `StageCtx`。
+- 结果：测试 29 → 32，1.88 与 stable 下 clippy 零警告，CI 全绿。
+- 行为变化：升级后旧缓存全部失效一次；已有 `audio.wav` 会复用；本地文件先检查 ASR 配置再跑 ffmpeg；本地文件也发 asr 进度事件。
 - ~~P2-1 入口去重~~：审查核对后划掉，三个入口不存在真正重复，加 `entry` 模块反而增加耦合。
+
+### 进行中
+- P3-1 输出质量基线：ffmpeg 生成的测试视频，转写/时间轴/关键帧结构快照，记录 compact payload 字节数与估算 token 数。
+- P3-2 MCP 按需读取：`analyze` 只返回摘要索引，新增按时间范围取转写、按编号取关键帧两个只读工具；参数收成 `StageCtx`。
