@@ -1,5 +1,6 @@
 //! Tauri GUI。
 
+use crate::state::SharedState;
 use avr_core::config::{load_config, save_config, AppConfig};
 use avr_core::jobs::JobProgress;
 use avr_core::pipeline::{analyze_url, compact_mcp_payload, transcribe_local};
@@ -8,7 +9,6 @@ use avr_core::tools::install::download_and_install;
 use avr_core::tools::manifest::{builtin_licenses, builtin_manifests};
 use avr_core::tools::registry::ToolRegistry;
 use serde::Serialize;
-use crate::state::SharedState;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
@@ -114,7 +114,11 @@ fn get_config(state: State<SharedState>) -> AppConfig {
 }
 
 #[tauri::command]
-fn save_app_config(cfg: AppConfig, app: tauri::AppHandle, state: State<SharedState>) -> Result<(), String> {
+fn save_app_config(
+    cfg: AppConfig,
+    app: tauri::AppHandle,
+    state: State<SharedState>,
+) -> Result<(), String> {
     let enable_mica = cfg.ui.enable_transparency;
     save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
     *state.config.lock() = cfg;
@@ -171,9 +175,7 @@ fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Re
 async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> Result<String, String> {
     let manifest = builtin_manifests()
         .into_iter()
-        .find(|m| {
-            tool_id == "whisper" && m.id.starts_with("whisper") || m.id == tool_id
-        })
+        .find(|m| tool_id == "whisper" && m.id.starts_with("whisper") || m.id == tool_id)
         .ok_or_else(|| "未找到安装清单".to_string())?;
     let root_path = state.root.lock().path.clone();
     download_and_install(&manifest, &root_path)
@@ -203,11 +205,14 @@ async fn start_transcribe(
     let ctx = state.pipeline_ctx();
     let app_handle = app.clone();
     tokio::spawn(async move {
-        let _ = app_handle.emit("job-progress", JobProgress::Stage {
-            media_key: path.clone(),
-            stage: "starting".into(),
-            percent: 0,
-        });
+        let _ = app_handle.emit(
+            "job-progress",
+            JobProgress::Stage {
+                media_key: path.clone(),
+                stage: "starting".into(),
+                percent: 0,
+            },
+        );
         let result = transcribe_local(&ctx, PathBuf::from(&path).as_path()).await;
         match result {
             Ok(r) => {

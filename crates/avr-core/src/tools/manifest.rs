@@ -96,6 +96,10 @@ pub fn builtin_licenses() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
         ("ffmpeg", "GPLv3", "https://ffmpeg.org/"),
         ("yt-dlp", "Unlicense", "https://github.com/yt-dlp/yt-dlp"),
-        ("whisper.cpp", "MIT", "https://github.com/ggml-org/whisper.cpp"),
+        (
+            "whisper.cpp",
+            "MIT",
+            "https://github.com/ggml-org/whisper.cpp",
+        ),
     ]
 }

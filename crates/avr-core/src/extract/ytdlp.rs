@@ -7,14 +7,12 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::AppConfig;
-use crate::error::{
-    cookies_required, extract_failed, unsupported_url, ytdlp_missing, AvrError,
-};
+use crate::error::{cookies_required, extract_failed, unsupported_url, ytdlp_missing, AvrError};
 use crate::extract::platform::{detect_platform, is_supported, Platform};
 use crate::ffmpeg::FfmpegContext;
 use crate::media::to_model_platform;
 use crate::models::{Transcript, VideoInfo};
-use crate::process::{ProcessRequest, run};
+use crate::process::{run, ProcessRequest};
 use crate::root::DataRoot;
 use crate::timeline::{parse_srt, parse_vtt, pick_subtitle_lang};
 use crate::tools::registry::ToolRegistry;
@@ -112,8 +110,13 @@ impl YtDlpExtractor {
         for ext in [".vtt", ".srt"] {
             for entry in std::fs::read_dir(dest_dir).into_iter().flatten().flatten() {
                 let p = entry.path();
-                if p.file_name().unwrap().to_string_lossy().contains("subtitle")
-                    && p.extension().map(|e| e == ext.trim_start_matches('.')).unwrap_or(false)
+                if p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("subtitle")
+                    && p.extension()
+                        .map(|e| e == ext.trim_start_matches('.'))
+                        .unwrap_or(false)
                 {
                     let content = std::fs::read_to_string(&p).unwrap_or_default();
                     if ext == ".vtt" {
@@ -126,7 +129,11 @@ impl YtDlpExtractor {
         Ok(None)
     }
 
-    pub async fn fetch_subtitles(&self, url: &str, dest_dir: &Path) -> Result<Option<Transcript>, AvrError> {
+    pub async fn fetch_subtitles(
+        &self,
+        url: &str,
+        dest_dir: &Path,
+    ) -> Result<Option<Transcript>, AvrError> {
         let info = self.extract_info(url).await?;
         self.fetch_subtitles_with_info(url, dest_dir, &info).await
     }

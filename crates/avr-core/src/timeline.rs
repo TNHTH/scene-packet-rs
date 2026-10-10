@@ -122,11 +122,7 @@ pub fn parse_srt(content: &str, language: &str) -> Transcript {
             let end = parse_srt_ts(m.get(2).unwrap().as_str());
             let text = text_lines.join(" ").trim().to_string();
             if !text.is_empty() {
-                segments.push(TranscriptSegment {
-                    start,
-                    end,
-                    text,
-                });
+                segments.push(TranscriptSegment { start, end, text });
             }
         }
     }
@@ -190,7 +186,10 @@ fn parse_srt_ts(ts: &str) -> f64 {
     let m = parts[1].parse::<f64>().unwrap_or(0.0);
     let rest: Vec<&str> = parts[2].split(',').collect();
     let s = rest[0].parse::<f64>().unwrap_or(0.0);
-    let ms = rest.get(1).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+    let ms = rest
+        .get(1)
+        .and_then(|x| x.parse::<f64>().ok())
+        .unwrap_or(0.0);
     h * 3600.0 + m * 60.0 + s + ms / 1000.0
 }
 

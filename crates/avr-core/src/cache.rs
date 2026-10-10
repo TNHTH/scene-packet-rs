@@ -49,8 +49,8 @@ pub fn load_cached_transcript(
     }
     let meta: CacheMetadata =
         serde_json::from_str(&fs::read_to_string(&meta_path).map_err(io_err)?).map_err(json_err)?;
-    let trans: Transcript =
-        serde_json::from_str(&fs::read_to_string(&trans_path).map_err(io_err)?).map_err(json_err)?;
+    let trans: Transcript = serde_json::from_str(&fs::read_to_string(&trans_path).map_err(io_err)?)
+        .map_err(json_err)?;
     let video_path = cache_dir.join("video.json");
     let video = if video_path.exists() {
         serde_json::from_str(&fs::read_to_string(&video_path).map_err(io_err)?).map_err(json_err)?
@@ -77,10 +77,7 @@ pub fn save_cache(
     metadata: &CacheMetadata,
 ) -> Result<PathBuf, AvrError> {
     fs::create_dir_all(cache_dir).map_err(io_err)?;
-    atomic_write(
-        &cache_dir.join("video.json"),
-        video_json(video)?.as_bytes(),
-    )?;
+    atomic_write(&cache_dir.join("video.json"), video_json(video)?.as_bytes())?;
     atomic_write(
         &cache_dir.join("transcript.json"),
         transcript_json(transcript)?.as_bytes(),

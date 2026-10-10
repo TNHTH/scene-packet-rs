@@ -21,9 +21,18 @@ pub struct JobManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobProgress {
-    Stage { media_key: String, stage: String, percent: u8 },
-    Done { media_key: String },
-    Failed { media_key: String, message: String },
+    Stage {
+        media_key: String,
+        stage: String,
+        percent: u8,
+    },
+    Done {
+        media_key: String,
+    },
+    Failed {
+        media_key: String,
+        message: String,
+    },
 }
 
 type Waiters = Vec<oneshot::Sender<Result<(), AvrError>>>;

@@ -139,7 +139,11 @@ pub fn to_model_platform(p: Platform) -> ModelPlatform {
 }
 
 fn io_to_avr(e: std::io::Error) -> AvrError {
-    AvrError::new(crate::error::ErrorCode::IoError, e.to_string(), "读取文件元数据失败。")
+    AvrError::new(
+        crate::error::ErrorCode::IoError,
+        e.to_string(),
+        "读取文件元数据失败。",
+    )
 }
 
 #[cfg(test)]

@@ -5,13 +5,15 @@ use avr_core::pipeline::{
     analyze_url, compact_mcp_payload, full_mcp_payload, transcribe_local, PipelineContext,
 };
 use avr_core::root::resolve_data_root;
+use rmcp::transport::stdio;
 use rmcp::{
     handler::server::router::tool::ToolRouter,
     handler::server::tool::Parameters,
-    model::{CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
+    model::{
+        CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
+    },
     schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
 };
-use rmcp::transport::stdio;
 use serde::Deserialize;
 use std::future::Future;
 use std::path::PathBuf;
@@ -152,10 +154,7 @@ impl AvrMcpServer {
         )]))
     }
 
-    async fn analyze_impl(
-        &self,
-        p: AnalyzeMediaParams,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    async fn analyze_impl(&self, p: AnalyzeMediaParams) -> Result<CallToolResult, rmcp::ErrorData> {
         let result = if p.source.starts_with("http://") || p.source.starts_with("https://") {
             analyze_url(&self.ctx, &p.source).await
         } else {
@@ -196,9 +195,7 @@ impl ServerHandler for AvrMcpServer {
                 name: "scene-packet".into(),
                 version: avr_core::VERSION.into(),
             },
-            instructions: Some(
-                "视频文本提取工具。只返回 transcript，不做总结。".into(),
-            ),
+            instructions: Some("视频文本提取工具。只返回 transcript，不做总结。".into()),
         }
     }
 }

@@ -4,7 +4,7 @@
 mod tests {
     use avr_core::asr::select_preset;
     use avr_core::extract::platform::{detect_platform, Platform};
-    use avr_core::media::{media_key, MediaSource, normalize_url};
+    use avr_core::media::{media_key, normalize_url, MediaSource};
     use avr_core::timeline::parse_vtt;
 
     #[test]

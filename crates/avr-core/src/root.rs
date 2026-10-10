@@ -92,7 +92,9 @@ pub fn resolve_data_root(exe_dir: Option<&Path>) -> Result<DataRoot, AvrError> {
         let portable = dir.join(PORTABLE_MARKER);
         if portable.exists() {
             info!("便携模式: {}", dir.display());
-            return Ok(DataRoot { path: dir.to_path_buf() });
+            return Ok(DataRoot {
+                path: dir.to_path_buf(),
+            });
         }
     }
 

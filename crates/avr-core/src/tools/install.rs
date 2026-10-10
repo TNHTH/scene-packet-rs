@@ -91,9 +91,8 @@ fn extract_zip_entries(
     entry_names: &[String],
 ) -> Result<(), AvrError> {
     let file = std::fs::File::open(zip_path).map_err(io_err)?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
-        AvrError::new(ErrorCode::ToolNotReady, e.to_string(), "压缩包损坏。")
-    })?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| AvrError::new(ErrorCode::ToolNotReady, e.to_string(), "压缩包损坏。"))?;
 
     for want in entry_names {
         let want_base = Path::new(want)

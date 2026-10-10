@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::AppConfig;
-use crate::root::DataRoot;
 use crate::error::{ffmpeg_missing, tool_not_ready, ytdlp_missing, AvrError};
+use crate::root::DataRoot;
 use crate::tools::detect;
 
 pub struct ToolRegistry {
@@ -68,18 +68,18 @@ impl ToolRegistry {
             "ffprobe" => self.ffprobe_path(),
             "yt-dlp" => self.ytdlp_path(),
             "whisper" => self.whisper_cli_path(),
-            _ => return ToolStatus {
-                id: id.to_string(),
-                ready: false,
-                path: None,
-                version: None,
-            },
+            _ => {
+                return ToolStatus {
+                    id: id.to_string(),
+                    ready: false,
+                    path: None,
+                    version: None,
+                }
+            }
         };
         let ok = path_result.is_ok();
         let path = path_result.ok();
-        let version = path
-            .as_ref()
-            .and_then(|p| detect::detect_version(p).ok());
+        let version = path.as_ref().and_then(|p| detect::detect_version(p).ok());
         ToolStatus {
             id: id.to_string(),
             ready: ok,

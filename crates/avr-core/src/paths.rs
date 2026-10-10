@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 
 /// 转为 file URI（Windows 原生路径）。
 pub fn to_file_uri(path: &Path) -> String {
-    let abs = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let s = abs.display().to_string().replace('\\', "/");
     if s.starts_with("//") {
         format!("file:{s}")

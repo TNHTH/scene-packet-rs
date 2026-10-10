@@ -6,9 +6,9 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::config::AppConfig;
-use crate::root::DataRoot;
 use crate::error::{ffmpeg_missing, process_failed, AvrError};
-use crate::process::{ProcessRequest, run};
+use crate::process::{run, ProcessRequest};
+use crate::root::DataRoot;
 use crate::tools::registry::ToolRegistry;
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +52,8 @@ pub async fn probe_duration(ctx: &FfmpegContext, input: &Path) -> Result<f64, Av
         expected_outputs: vec![],
     };
     let out = run(&req).await?;
-    let parsed: FfprobeOutput = serde_json::from_str(&out.stdout).map_err(|e| process_failed(&e.to_string()))?;
+    let parsed: FfprobeOutput =
+        serde_json::from_str(&out.stdout).map_err(|e| process_failed(&e.to_string()))?;
     let dur = parsed
         .format
         .and_then(|f| f.duration)

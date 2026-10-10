@@ -150,7 +150,9 @@ impl Default for AsrConfig {
 
 impl Default for OutputConfig {
     fn default() -> Self {
-        Self { cache_dir: String::new() }
+        Self {
+            cache_dir: String::new(),
+        }
     }
 }
 
@@ -185,16 +187,19 @@ pub fn load_config(root: &DataRoot) -> Result<AppConfig, AvrError> {
     }
     let content = fs::read_to_string(&path).map_err(io_err)?;
     let cfg: AppConfig = toml::from_str(&content).map_err(|e| {
-        AvrError::new(ErrorCode::ConfigError, e.to_string(), "检查 config.toml 格式。")
+        AvrError::new(
+            ErrorCode::ConfigError,
+            e.to_string(),
+            "检查 config.toml 格式。",
+        )
     })?;
     Ok(cfg)
 }
 
 pub fn save_config(root: &DataRoot, cfg: &AppConfig) -> Result<(), AvrError> {
     root.ensure_layout()?;
-    let content = toml::to_string_pretty(cfg).map_err(|e| {
-        AvrError::new(ErrorCode::ConfigError, e.to_string(), "序列化配置失败。")
-    })?;
+    let content = toml::to_string_pretty(cfg)
+        .map_err(|e| AvrError::new(ErrorCode::ConfigError, e.to_string(), "序列化配置失败。"))?;
     fs::write(root.config_path(), content).map_err(io_err)?;
     Ok(())
 }

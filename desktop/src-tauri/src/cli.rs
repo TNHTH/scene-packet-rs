@@ -28,7 +28,10 @@ fn run_transcribe_inner(path: &str) -> Result<String, AvrError> {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(avr_core::pipeline::transcribe_local(&ctx, std::path::Path::new(path)))?;
+        .block_on(avr_core::pipeline::transcribe_local(
+            &ctx,
+            std::path::Path::new(path),
+        ))?;
     Ok(serde_json::to_string_pretty(&compact_mcp_payload(&result, 3000)).unwrap())
 }
 

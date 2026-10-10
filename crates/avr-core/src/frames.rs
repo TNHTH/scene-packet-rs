@@ -124,9 +124,9 @@ pub async fn extract_frames(
         let markdown = format!("![{ts}](images/{name})");
         let base64_data = match delivery {
             FrameDelivery::Path => None,
-            FrameDelivery::Inline | FrameDelivery::Both => std::fs::read(&path)
-                .ok()
-                .map(|b| STANDARD.encode(&b)),
+            FrameDelivery::Inline | FrameDelivery::Both => {
+                std::fs::read(&path).ok().map(|b| STANDARD.encode(&b))
+            }
         };
         out.push(CapturedFrame {
             time: *t,

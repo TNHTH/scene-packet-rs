@@ -14,8 +14,8 @@ use crate::ffmpeg::{extract_audio_wav, probe_duration, FfmpegContext};
 use crate::jobs::{shared_job_manager, JobManifest, JobProgress};
 use crate::media::{media_key, MediaSource};
 use crate::models::{
-    AnalyzeResult, CacheMetadata, Transcript, TRANSCRIPT_INLINE_LIMIT, TRANSCRIPT_PREVIEW_LIMIT,
-    format_inline_text, truncate_utf8,
+    format_inline_text, truncate_utf8, AnalyzeResult, CacheMetadata, Transcript,
+    TRANSCRIPT_INLINE_LIMIT, TRANSCRIPT_PREVIEW_LIMIT,
 };
 use crate::paths::to_file_uri;
 use crate::root::DataRoot;
@@ -40,7 +40,12 @@ pub async fn analyze_url(ctx: &PipelineContext, url: &str) -> Result<AnalyzeResu
     }
 
     let base_cache = effective_cache_dir(&ctx.root, &ctx.config);
-    let key = media_key(&MediaSource::Url { url: url.to_string() }, None)?;
+    let key = media_key(
+        &MediaSource::Url {
+            url: url.to_string(),
+        },
+        None,
+    )?;
     let item_cache = base_cache.join(&key);
 
     let mgr = shared_job_manager();
@@ -104,7 +109,12 @@ async fn run_url_pipeline(
     let mut asr_provider: Option<String> = Some("subtitle".into());
     let mut asr_model = String::new();
 
-    if transcript.is_none() || transcript.as_ref().map(|t| t.segments.is_empty()).unwrap_or(true) {
+    if transcript.is_none()
+        || transcript
+            .as_ref()
+            .map(|t| t.segments.is_empty())
+            .unwrap_or(true)
+    {
         let asr = AsrService::new(ctx.root.clone(), ctx.config.clone());
         let preset = asr.active_preset(None, Some(video.platform.as_str()));
         if !asr.is_ready(&preset) {
@@ -117,7 +127,10 @@ async fn run_url_pipeline(
         });
         let audio_path = item_cache.join("audio.wav");
         extractor.download_audio(url, &audio_path).await?;
-        transcript = Some(asr.transcribe(&audio_path, None, Some(video.platform.as_str())).await?);
+        transcript = Some(
+            asr.transcribe(&audio_path, None, Some(video.platform.as_str()))
+                .await?,
+        );
         asr_provider = Some(preset);
         asr_model = ctx.config.tools.whisper_model_path.clone();
     }

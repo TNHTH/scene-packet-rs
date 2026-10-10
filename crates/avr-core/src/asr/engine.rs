@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::config::AppConfig;
 use crate::error::{asr_failed, no_transcript_asr_not_configured, AvrError};
 use crate::models::TranscriptSegment;
-use crate::process::{ProcessRequest, run};
+use crate::process::{run, ProcessRequest};
 use crate::root::DataRoot;
 use crate::timeline::parse_srt;
 use crate::tools::registry::ToolRegistry;

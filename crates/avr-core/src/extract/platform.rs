@@ -63,7 +63,10 @@ mod tests {
             detect_platform("https://www.bilibili.com/video/BV1xx"),
             Some(Platform::Bilibili)
         );
-        assert_eq!(detect_platform("https://b23.tv/abc"), Some(Platform::Bilibili));
+        assert_eq!(
+            detect_platform("https://b23.tv/abc"),
+            Some(Platform::Bilibili)
+        );
     }
 
     #[test]

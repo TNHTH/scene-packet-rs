@@ -26,13 +26,7 @@ pub fn default_model_path(root_models: &Path) -> PathBuf {
 }
 
 impl Preset {
-    pub fn args(
-        &self,
-        model: &Path,
-        audio: &Path,
-        language: &str,
-        out_base: &str,
-    ) -> Vec<String> {
+    pub fn args(&self, model: &Path, audio: &Path, language: &str, out_base: &str) -> Vec<String> {
         vec![
             "-m".into(),
             model.display().to_string(),
