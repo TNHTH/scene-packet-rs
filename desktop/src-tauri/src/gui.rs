@@ -1,10 +1,11 @@
 //! Tauri GUI。
 
 use crate::error::{CommandError, CommandResult};
+use crate::mcp::compact_mcp_payload;
 use crate::state::{AppState, SharedState};
 use avr_core::config::{save_config, AppConfig};
 use avr_core::jobs::JobProgress;
-use avr_core::pipeline::{analyze, compact_mcp_payload, AnalyzeOptions, Source};
+use avr_core::pipeline::{analyze, AnalyzeOptions, Source};
 use avr_core::root::{needs_first_run_setup, set_root_pointer, DataRoot};
 use avr_core::tools::install::download_and_install;
 use avr_core::tools::manifest::{builtin_licenses, builtin_manifests};

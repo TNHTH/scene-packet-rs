@@ -1,8 +1,8 @@
 //! CLI 子命令。
 
+use crate::mcp::compact_mcp_payload;
 use avr_core::config::load_config;
 use avr_core::error::AvrError;
-use avr_core::pipeline::compact_mcp_payload;
 
 use crate::state::AppState;
 use avr_core::root::resolve_data_root;

@@ -11,10 +11,7 @@ use crate::error::{no_transcript_asr_not_configured, unsupported_url, AvrError};
 use crate::extract::platform::detect_platform;
 use crate::jobs::{JobManager, JobManifest, JobProgress};
 use crate::media::{media_key, MediaSource};
-use crate::models::{
-    format_inline_text, truncate_utf8, AnalyzeResult, CacheMetadata, Transcript,
-    TRANSCRIPT_INLINE_LIMIT,
-};
+use crate::models::{AnalyzeResult, CacheMetadata, Transcript, TRANSCRIPT_INLINE_LIMIT};
 use crate::paths::to_file_uri;
 use crate::root::DataRoot;
 use crate::tools::{RealTools, Tools};
@@ -378,59 +375,6 @@ impl Clone for PipelineContext {
             config: self.config.clone(),
         }
     }
-}
-
-pub fn compact_mcp_payload(result: &AnalyzeResult, max_inline: usize) -> serde_json::Value {
-    let trans = result.transcript.as_ref();
-    let sample = trans
-        .map(|t| t.segments.iter().take(5).cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    let text = trans
-        .map(|t| format_inline_text(t, result.truncated))
-        .unwrap_or_default();
-    let inline = if text.len() > max_inline {
-        format!("{}...", truncate_utf8(&text, max_inline))
-    } else {
-        text
-    };
-    serde_json::json!({
-        "media_key": result.media_key,
-        "title": result.video.title,
-        "duration": result.video.duration,
-        "platform": result.video.platform,
-        "video_id": result.video.id,
-        "source": trans.map(|t| match t.source { crate::models::TranscriptSource::Subtitle => "subtitle", crate::models::TranscriptSource::Asr => "asr" }),
-        "language": trans.map(|t| t.language.clone()),
-        "segment_count": trans.map(|t| t.segments.len()).unwrap_or(0),
-        "transcript_path": result.transcript_path,
-        "transcript_uri": result.transcript_uri,
-        "text_file": result.transcript_path,
-        "cache_dir": result.cache_dir,
-        "truncated": result.truncated,
-        "sample_segments": sample,
-        "has_video": true,
-        "text": inline,
-    })
-}
-
-pub fn full_mcp_payload(result: &AnalyzeResult) -> serde_json::Value {
-    let trans = result.transcript.as_ref();
-    serde_json::json!({
-        "title": result.video.title,
-        "platform": result.video.platform,
-        "duration": result.video.duration,
-        "video_id": result.video.id,
-        "source": trans.map(|t| match t.source { crate::models::TranscriptSource::Subtitle => "subtitle", crate::models::TranscriptSource::Asr => "asr" }),
-        "language": trans.map(|t| t.language.clone()),
-        "truncated": result.truncated,
-        "transcript_path": result.transcript_path,
-        "transcript_uri": result.transcript_uri,
-        "text_file": result.transcript_path,
-        "cache_dir": result.cache_dir,
-        "media_key": result.media_key,
-        "segments": trans.map(|t| t.segments.clone()),
-        "text": trans.map(|t| format_inline_text(t, result.truncated)),
-    })
 }
 
 #[cfg(test)]
