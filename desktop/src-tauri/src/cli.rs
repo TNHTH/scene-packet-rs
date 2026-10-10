@@ -28,9 +28,11 @@ fn run_transcribe_inner(path: &str) -> Result<String, AvrError> {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(avr_core::pipeline::transcribe_local(
+        .block_on(avr_core::pipeline::analyze(
             &ctx,
-            std::path::Path::new(path),
+            &avr_core::pipeline::Source::Local(path.into()),
+            &avr_core::pipeline::AnalyzeOptions::default(),
+            &avr_core::pipeline::Deps::new(avr_core::jobs::shared_job_manager()),
         ))?;
     Ok(serde_json::to_string_pretty(&compact_mcp_payload(&result, 3000)).unwrap())
 }
@@ -61,7 +63,12 @@ fn run_analyze_inner(url: &str) -> Result<String, AvrError> {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(avr_core::pipeline::analyze_url(&ctx, url))?;
+        .block_on(avr_core::pipeline::analyze(
+            &ctx,
+            &avr_core::pipeline::Source::Url(url.to_string()),
+            &avr_core::pipeline::AnalyzeOptions::default(),
+            &avr_core::pipeline::Deps::new(avr_core::jobs::shared_job_manager()),
+        ))?;
     Ok(serde_json::to_string_pretty(&compact_mcp_payload(&result, 3000)).unwrap())
 }
 

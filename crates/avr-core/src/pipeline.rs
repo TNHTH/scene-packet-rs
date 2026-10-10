@@ -1,6 +1,7 @@
 //! 视频分析流水线。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::Utc;
 
@@ -11,7 +12,7 @@ use crate::error::{no_transcript_asr_not_configured, unsupported_url, AvrError};
 use crate::extract::platform::detect_platform;
 use crate::extract::ytdlp::YtDlpExtractor;
 use crate::ffmpeg::{extract_audio_wav, probe_duration, FfmpegContext};
-use crate::jobs::{shared_job_manager, JobManifest, JobProgress};
+use crate::jobs::{shared_job_manager, JobManager, JobManifest, JobProgress};
 use crate::media::{media_key, MediaSource};
 use crate::models::{
     format_inline_text, truncate_utf8, AnalyzeResult, CacheMetadata, Transcript,
@@ -34,7 +35,90 @@ impl PipelineContext {
     }
 }
 
+/// 待分析的媒体来源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// B站 / 抖音等在线视频链接。
+    Url(String),
+    /// 本地音视频文件。
+    Local(PathBuf),
+}
+
+impl Source {
+    /// 按输入字符串推断来源：`http://` / `https://` 开头视为 URL，其余视为本地路径。
+    pub fn parse(input: &str) -> Self {
+        if input.starts_with("http://") || input.starts_with("https://") {
+            Self::Url(input.to_string())
+        } else {
+            Self::Local(PathBuf::from(input))
+        }
+    }
+}
+
+/// 分析选项。字段私有、只加不改：通过 `AnalyzeOptions::default()` 与 builder 方法构造。
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct AnalyzeOptions {}
+
+impl AnalyzeOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// 流水线依赖，由调用方构造并注入。字段私有、只加不改：构造只走 `Deps::new`。
+#[derive(Clone)]
+pub struct Deps {
+    jobs: Arc<JobManager>,
+}
+
+impl Deps {
+    pub fn new(jobs: Arc<JobManager>) -> Self {
+        Self { jobs }
+    }
+
+    pub fn jobs(&self) -> &Arc<JobManager> {
+        &self.jobs
+    }
+
+    /// 测试用：独立的 JobManager。
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self::new(Arc::new(JobManager::new()))
+    }
+}
+
+/// 统一分析入口：GUI / CLI / MCP 都应调用这里。
+pub async fn analyze(
+    ctx: &PipelineContext,
+    src: &Source,
+    _opts: &AnalyzeOptions,
+    deps: &Deps,
+) -> Result<AnalyzeResult, AvrError> {
+    match src {
+        Source::Url(url) => analyze_url_with(ctx, url, deps).await,
+        Source::Local(path) => transcribe_local_with(ctx, path, deps).await,
+    }
+}
+
+#[deprecated(note = "使用 analyze(ctx, &Source::Url(..), opts, deps)")]
 pub async fn analyze_url(ctx: &PipelineContext, url: &str) -> Result<AnalyzeResult, AvrError> {
+    analyze_url_with(ctx, url, &Deps::new(shared_job_manager())).await
+}
+
+#[deprecated(note = "使用 analyze(ctx, &Source::Local(..), opts, deps)")]
+pub async fn transcribe_local(
+    ctx: &PipelineContext,
+    path: &Path,
+) -> Result<AnalyzeResult, AvrError> {
+    transcribe_local_with(ctx, path, &Deps::new(shared_job_manager())).await
+}
+
+async fn analyze_url_with(
+    ctx: &PipelineContext,
+    url: &str,
+    deps: &Deps,
+) -> Result<AnalyzeResult, AvrError> {
     if detect_platform(url).is_none() {
         return Err(unsupported_url());
     }
@@ -48,29 +132,37 @@ pub async fn analyze_url(ctx: &PipelineContext, url: &str) -> Result<AnalyzeResu
     )?;
     let item_cache = base_cache.join(&key);
 
-    let mgr = shared_job_manager();
     let url_clone = url.to_string();
     let ctx_clone = ctx.clone();
+    let deps_clone = deps.clone();
     let item_cache_run = item_cache.clone();
     let key_run = key.clone();
 
-    mgr.run_once(&key, &item_cache, || async move {
-        run_url_pipeline(&ctx_clone, &url_clone, &item_cache_run, &key_run)
+    deps.jobs
+        .run_once(&key, &item_cache, || async move {
+            run_url_pipeline(
+                &ctx_clone,
+                &deps_clone,
+                &url_clone,
+                &item_cache_run,
+                &key_run,
+            )
             .await
             .map(|_| ())
-    })
-    .await?;
+        })
+        .await?;
 
     build_result_from_cache(&item_cache, &key)
 }
 
 async fn run_url_pipeline(
     ctx: &PipelineContext,
+    deps: &Deps,
     url: &str,
     item_cache: &Path,
     key: &str,
 ) -> Result<AnalyzeResult, AvrError> {
-    let mgr = shared_job_manager();
+    let mgr = &deps.jobs;
     mgr.emit(JobProgress::Stage {
         media_key: key.to_string(),
         stage: "checking_cache".into(),
@@ -160,9 +252,10 @@ async fn run_url_pipeline(
     Ok(make_analyze_result(&video, &transcript, item_cache, key))
 }
 
-pub async fn transcribe_local(
+async fn transcribe_local_with(
     ctx: &PipelineContext,
     path: &Path,
+    deps: &Deps,
 ) -> Result<AnalyzeResult, AvrError> {
     let ffmpeg = FfmpegContext::resolve(&ctx.root, &ctx.config)?;
     let duration = probe_duration(&ffmpeg, path).await.ok();
@@ -175,18 +268,18 @@ pub async fn transcribe_local(
     let base_cache = effective_cache_dir(&ctx.root, &ctx.config);
     let item_cache = base_cache.join(&key);
 
-    let mgr = shared_job_manager();
     let path_clone = path.to_path_buf();
     let ctx_clone = ctx.clone();
     let item_cache_run = item_cache.clone();
     let key_run = key.clone();
 
-    mgr.run_once(&key, &item_cache, || async move {
-        run_local_pipeline(&ctx_clone, &path_clone, &item_cache_run, &key_run)
-            .await
-            .map(|_| ())
-    })
-    .await?;
+    deps.jobs
+        .run_once(&key, &item_cache, || async move {
+            run_local_pipeline(&ctx_clone, &path_clone, &item_cache_run, &key_run)
+                .await
+                .map(|_| ())
+        })
+        .await?;
 
     build_result_from_cache(&item_cache, &key)
 }
@@ -342,4 +435,35 @@ pub fn full_mcp_payload(result: &AnalyzeResult) -> serde_json::Value {
         "segments": trans.map(|t| t.segments.clone()),
         "text": trans.map(|t| format_inline_text(t, result.truncated)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_parse_distinguishes_url_and_local() {
+        assert_eq!(
+            Source::parse("https://www.bilibili.com/video/BV1x"),
+            Source::Url("https://www.bilibili.com/video/BV1x".into())
+        );
+        assert_eq!(
+            Source::parse("C:/videos/a.mp4"),
+            Source::Local(PathBuf::from("C:/videos/a.mp4"))
+        );
+    }
+
+    #[tokio::test]
+    async fn analyze_rejects_unsupported_url() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = PipelineContext {
+            root: DataRoot {
+                path: tmp.path().to_path_buf(),
+            },
+            config: AppConfig::default(),
+        };
+        let src = Source::Url("https://www.youtube.com/watch?v=x".into());
+        let r = analyze(&ctx, &src, &AnalyzeOptions::new(), &Deps::for_test()).await;
+        assert!(matches!(r, Err(ref e) if e.code == crate::ErrorCode::UnsupportedUrl));
+    }
 }

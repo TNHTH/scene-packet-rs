@@ -2,7 +2,7 @@
 
 use avr_core::error::AvrError;
 use avr_core::pipeline::{
-    analyze_url, compact_mcp_payload, full_mcp_payload, transcribe_local, PipelineContext,
+    analyze, compact_mcp_payload, full_mcp_payload, AnalyzeOptions, Deps, PipelineContext, Source,
 };
 use avr_core::root::resolve_data_root;
 use rmcp::transport::stdio;
@@ -16,7 +16,6 @@ use rmcp::{
 };
 use serde::Deserialize;
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -155,11 +154,14 @@ impl AvrMcpServer {
     }
 
     async fn analyze_impl(&self, p: AnalyzeMediaParams) -> Result<CallToolResult, rmcp::ErrorData> {
-        let result = if p.source.starts_with("http://") || p.source.starts_with("https://") {
-            analyze_url(&self.ctx, &p.source).await
-        } else {
-            transcribe_local(&self.ctx, PathBuf::from(&p.source).as_path()).await
-        };
+        let deps = Deps::new(avr_core::jobs::shared_job_manager());
+        let result = analyze(
+            &self.ctx,
+            &Source::parse(&p.source),
+            &AnalyzeOptions::default(),
+            &deps,
+        )
+        .await;
 
         match result {
             Ok(r) => {

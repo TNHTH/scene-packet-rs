@@ -3,7 +3,7 @@
 use crate::state::SharedState;
 use avr_core::config::{load_config, save_config, AppConfig};
 use avr_core::jobs::JobProgress;
-use avr_core::pipeline::{analyze_url, compact_mcp_payload, transcribe_local};
+use avr_core::pipeline::{analyze, compact_mcp_payload, AnalyzeOptions, Deps, Source};
 use avr_core::root::{needs_first_run_setup, resolve_data_root, set_root_pointer, DataRoot};
 use avr_core::tools::install::download_and_install;
 use avr_core::tools::manifest::{builtin_licenses, builtin_manifests};
@@ -135,7 +135,7 @@ fn save_app_config(
 #[tauri::command]
 fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
     let cfg = state.config.lock().clone();
-    let reg = ToolRegistry::new(&*state.root.lock(), &cfg);
+    let reg = ToolRegistry::new(&state.root.lock(), &cfg);
     let manifests = builtin_manifests();
     ["ffmpeg", "ffprobe", "yt-dlp", "whisper"]
         .iter()
@@ -213,7 +213,13 @@ async fn start_transcribe(
                 percent: 0,
             },
         );
-        let result = transcribe_local(&ctx, PathBuf::from(&path).as_path()).await;
+        let result = analyze(
+            &ctx,
+            &Source::Local(PathBuf::from(&path)),
+            &AnalyzeOptions::default(),
+            &Deps::new(avr_core::jobs::shared_job_manager()),
+        )
+        .await;
         match result {
             Ok(r) => {
                 let json = compact_mcp_payload(&r, 3000);
@@ -236,7 +242,13 @@ async fn start_analyze(
     let ctx = state.pipeline_ctx();
     let app_handle = app.clone();
     tokio::spawn(async move {
-        let result = analyze_url(&ctx, &url).await;
+        let result = analyze(
+            &ctx,
+            &Source::Url(url),
+            &AnalyzeOptions::default(),
+            &Deps::new(avr_core::jobs::shared_job_manager()),
+        )
+        .await;
         match result {
             Ok(r) => {
                 let json = compact_mcp_payload(&r, 3000);
