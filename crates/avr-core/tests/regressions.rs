@@ -113,13 +113,15 @@ fn compact_marks_actual_unicode_truncation() {
     assert_eq!(v["text"].as_str().unwrap().chars().count(), 3003);
 }
 #[test]
-fn unix_file_uri_is_encoded() {
+fn file_uri_roundtrips_encoded_path() {
     let t = tempfile::tempdir().unwrap();
     let p = t.path().join("中文 a.txt");
     std::fs::write(&p, b"x").unwrap();
     let uri = avr_core::paths::to_file_uri(&p);
     assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), p);
     assert!(!uri.starts_with("file:////"));
+    assert!(uri.contains("%20"));
+    assert!(!uri.contains("中文"));
 }
 
 #[tokio::test]
