@@ -61,10 +61,9 @@ pub fn load_cached_transcript(
             title: String::new(),
             url: String::new(),
             duration: 0.0,
-            platform: match meta.platform.as_str() {
-                "douyin" => crate::models::Platform::Douyin,
-                _ => crate::models::Platform::Bilibili,
-            },
+            // 旧缓存未知平台按 bilibili 兜底，保持向后兼容。
+            platform: crate::models::Platform::parse(&meta.platform)
+                .unwrap_or(crate::models::Platform::Bilibili),
             webpage_url: String::new(),
         }
     };

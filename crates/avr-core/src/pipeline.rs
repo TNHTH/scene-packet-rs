@@ -222,7 +222,7 @@ async fn run_local_pipeline(
             .unwrap_or_else(|| "本地文件".into()),
         url: path.display().to_string(),
         duration,
-        platform: crate::models::Platform::Bilibili,
+        platform: crate::models::Platform::Local,
         webpage_url: path.display().to_string(),
     };
 
@@ -231,7 +231,7 @@ async fn run_local_pipeline(
         asr_provider: Some(preset),
         asr_model: ctx.config.tools.whisper_model_path.clone(),
         video_id: key.to_string(),
-        platform: "local".into(),
+        platform: crate::models::Platform::Local.as_str().into(),
         source: "asr".into(),
         created_at: Utc::now().to_rfc3339(),
     };

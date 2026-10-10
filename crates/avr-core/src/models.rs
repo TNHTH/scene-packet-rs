@@ -17,6 +17,8 @@ pub struct VideoInfo {
 pub enum Platform {
     Bilibili,
     Douyin,
+    /// 本地媒体文件（非在线平台）。
+    Local,
 }
 
 impl Platform {
@@ -24,6 +26,17 @@ impl Platform {
         match self {
             Self::Bilibili => "bilibili",
             Self::Douyin => "douyin",
+            Self::Local => "local",
+        }
+    }
+
+    /// 从缓存元数据中的字符串还原；未知值返回 None，由调用方决定兜底。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "bilibili" => Some(Self::Bilibili),
+            "douyin" => Some(Self::Douyin),
+            "local" => Some(Self::Local),
+            _ => None,
         }
     }
 }
@@ -106,4 +119,19 @@ pub fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Platform;
+
+    #[test]
+    fn platform_str_roundtrip_includes_local() {
+        for p in [Platform::Bilibili, Platform::Douyin, Platform::Local] {
+            assert_eq!(Platform::parse(p.as_str()), Some(p));
+            let json = serde_json::to_string(&p).unwrap();
+            assert_eq!(json, format!("\"{}\"", p.as_str()));
+        }
+        assert_eq!(Platform::parse("youtube"), None);
+    }
 }
