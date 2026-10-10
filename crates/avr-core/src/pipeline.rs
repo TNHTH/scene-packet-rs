@@ -344,10 +344,15 @@ where
     Ok(make_analyze_result(video, &transcript, item_cache, key))
 }
 
-/// 当前 ASR 配置的指纹（模型路径 + whisper 版本）。
+/// 当前 ASR 配置的指纹（模型内容 + whisper 版本）。
+///
+/// `model` 只含模型文件的内容指纹（不含路径；路径仅用于读取），
+/// 同路径换模型会失效，touch / 复制到别的路径不会。
 fn asr_fingerprint(ctx: &PipelineContext, deps: &Deps) -> AsrFingerprint {
+    let model_path =
+        crate::tools::registry::ToolRegistry::new(&ctx.root, &ctx.config).whisper_model_path();
     AsrFingerprint {
-        model: ctx.config.tools.whisper_model_path.clone(),
+        model: crate::fingerprint::content_fingerprint(&model_path).unwrap_or_default(),
         version: deps.tools.version(ctx, ToolId::Whisper).unwrap_or_default(),
     }
 }
@@ -653,5 +658,56 @@ mod tests {
         let meta = load_cached_transcript(&dir, None).unwrap().unwrap().2;
         assert_eq!(meta.source, "subtitle");
         assert!(meta.asr_version.is_empty());
+    }
+
+    /// P2-3 修复：ASR 模型按内容指纹判定。同路径换模型内容 → 不命中；
+    /// 只 touch 或复制到新路径并改配置 → 命中，且 metadata 的 asr_model 不含路径。
+    #[tokio::test]
+    async fn model_content_fingerprint_controls_transcript_cache() {
+        use crate::tools::runtime::fake::FakeTools;
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut ctx = test_ctx(&tmp);
+        let model = tmp.path().join("model-a.bin");
+        std::fs::write(&model, b"model weights v1").unwrap();
+        ctx.config.tools.whisper_model_path = model.display().to_string();
+        let media = tmp.path().join("clip.mp4");
+        std::fs::write(&media, b"fake").unwrap();
+        let fake = Arc::new(FakeTools::default());
+        let deps = Deps::new(Arc::new(JobManager::new())).with_tools(fake.clone());
+        let src = Source::Local(media);
+        let opts = AnalyzeOptions::new();
+        let calls = || fake.transcribe_calls.load(Ordering::SeqCst);
+
+        let r = analyze(&ctx, &src, &opts, &deps).await.unwrap();
+        assert_eq!(calls(), 1);
+        let meta = load_cached_transcript(Path::new(&r.cache_dir), None)
+            .unwrap()
+            .unwrap()
+            .2;
+        assert!(!meta.asr_model.contains("model-a"), "{}", meta.asr_model);
+
+        // 只 touch：命中。
+        std::fs::File::options()
+            .write(true)
+            .open(&model)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        analyze(&ctx, &src, &opts, &deps).await.unwrap();
+        assert_eq!(calls(), 1, "touch 不应失效");
+
+        // 复制到新路径并改配置：命中。
+        let copy = tmp.path().join("model-b.bin");
+        std::fs::copy(&model, &copy).unwrap();
+        ctx.config.tools.whisper_model_path = copy.display().to_string();
+        analyze(&ctx, &src, &opts, &deps).await.unwrap();
+        assert_eq!(calls(), 1, "复制同一模型不应失效");
+
+        // 同路径换内容：不命中。
+        std::fs::write(&copy, b"model weights v2").unwrap();
+        analyze(&ctx, &src, &opts, &deps).await.unwrap();
+        assert_eq!(calls(), 2, "换模型内容必须重新转写");
     }
 }

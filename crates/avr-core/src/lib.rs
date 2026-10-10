@@ -7,6 +7,7 @@ pub mod error;
 pub mod export;
 pub mod extract;
 pub mod ffmpeg;
+pub mod fingerprint;
 pub mod frames;
 pub mod jobs;
 pub mod media;

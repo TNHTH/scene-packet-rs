@@ -125,20 +125,13 @@ impl Tools for RealTools {
         asr.is_ready(&preset).then_some(preset)
     }
 
-    /// 以可执行文件的大小与修改时间作为版本指纹：升级 / 替换二进制即失效，
-    /// 且不需要在异步上下文里同步拉起子进程。
+    /// 以可执行文件的内容指纹（大小 + 头尾 xxh3）作为版本：
+    /// 换版本即失效；重装或复制同一个二进制不失效。
     fn version(&self, ctx: &PipelineContext, id: ToolId) -> Option<String> {
         let path = ToolRegistry::new(&ctx.root, &ctx.config)
             .tool_path(id)
             .ok()?;
-        let meta = std::fs::metadata(&path).ok()?;
-        let mtime = meta
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs();
-        Some(format!("{}:{mtime}", meta.len()))
+        crate::fingerprint::content_fingerprint(&path)
     }
 
     async fn transcribe(
