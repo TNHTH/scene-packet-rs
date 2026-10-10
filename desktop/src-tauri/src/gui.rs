@@ -1,5 +1,6 @@
 //! Tauri GUI。
 
+use crate::error::{CommandError, CommandResult};
 use crate::state::{AppState, SharedState};
 use avr_core::config::{save_config, AppConfig};
 use avr_core::jobs::JobProgress;
@@ -88,12 +89,12 @@ fn get_data_root(state: State<SharedState>) -> String {
 }
 
 #[tauri::command]
-fn set_data_root(path: String, state: State<SharedState>) -> Result<String, String> {
+fn set_data_root(path: String, state: State<SharedState>) -> CommandResult<String> {
     let new_root = DataRoot {
         path: PathBuf::from(path),
     };
-    new_root.ensure_layout().map_err(|e| e.format_user())?;
-    set_root_pointer(&new_root.path).map_err(|e| e.format_user())?;
+    new_root.ensure_layout()?;
+    set_root_pointer(&new_root.path)?;
     let display = new_root.path.display().to_string();
     *state.root.lock() = new_root;
     Ok(display)
@@ -109,9 +110,9 @@ fn save_app_config(
     cfg: AppConfig,
     app: tauri::AppHandle,
     state: State<SharedState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let enable_mica = cfg.ui.enable_transparency;
-    save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
+    save_config(&state.root.lock(), &cfg)?;
     *state.config.lock() = cfg;
     #[cfg(windows)]
     if enable_mica {
@@ -148,30 +149,28 @@ fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
 }
 
 #[tauri::command]
-fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Result<(), String> {
+fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> CommandResult<()> {
     let mut cfg = state.config.lock().clone();
-    match ToolId::parse(&tool_id).ok_or_else(|| "未知工具".to_string())? {
+    match ToolId::parse(&tool_id).ok_or_else(|| CommandError::invalid_argument("未知工具"))? {
         ToolId::Ffmpeg => cfg.tools.ffmpeg_path = path,
         ToolId::Ffprobe => cfg.tools.ffprobe_path = path,
         ToolId::YtDlp => cfg.tools.ytdlp_path = path,
         ToolId::Whisper => cfg.tools.whisper_cli_path = path,
     }
-    save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
+    save_config(&state.root.lock(), &cfg)?;
     *state.config.lock() = cfg;
     Ok(())
 }
 
 #[tauri::command]
-async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> Result<String, String> {
-    let id = ToolId::parse(&tool_id).ok_or_else(|| "未知工具".to_string())?;
+async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> CommandResult<String> {
+    let id = ToolId::parse(&tool_id).ok_or_else(|| CommandError::invalid_argument("未知工具"))?;
     let manifest = builtin_manifests()
         .into_iter()
         .find(|m| id.matches_manifest(&m.id))
-        .ok_or_else(|| "未找到安装清单".to_string())?;
+        .ok_or_else(|| CommandError::invalid_argument("未找到安装清单"))?;
     let root_path = state.root.lock().path.clone();
-    download_and_install(&manifest, &root_path)
-        .await
-        .map_err(|e| e.format_user())?;
+    download_and_install(&manifest, &root_path).await?;
     Ok(format!("已安装 {}", tool_id))
 }
 

@@ -106,8 +106,13 @@ fn metadata_json(m: &CacheMetadata) -> Result<String, AvrError> {
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限。")
+    AvrError::io(e, "检查磁盘权限。")
 }
 fn json_err(e: serde_json::Error) -> AvrError {
-    AvrError::new(ErrorCode::CacheError, e.to_string(), "缓存文件损坏。")
+    AvrError::new(
+        ErrorCode::CacheError,
+        "缓存 JSON 解析失败",
+        "缓存文件损坏。",
+    )
+    .with_source(e)
 }

@@ -82,7 +82,7 @@
       await invoke('install_tool', { toolId });
       tools = await invoke('list_tools');
     } catch (e) {
-      error = String(e);
+      error = e?.display ?? String(e);
     } finally {
       installing = '';
     }

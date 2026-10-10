@@ -4,6 +4,7 @@
 
 mod cli;
 mod console;
+mod error;
 mod gui;
 mod mcp;
 mod state;

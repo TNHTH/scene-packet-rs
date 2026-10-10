@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{AvrError, ErrorCode};
+use crate::error::AvrError;
 use crate::models::Transcript;
 
 pub fn export_obsidian_bundle(
@@ -21,5 +21,5 @@ pub fn export_obsidian_bundle(
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查导出目录权限。")
+    AvrError::io(e, "检查导出目录权限。")
 }

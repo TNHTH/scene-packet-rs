@@ -178,17 +178,15 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), AvrError> {
 
 pub fn write_manifest(cache_dir: &Path, manifest: &JobManifest) -> Result<(), AvrError> {
     let path = cache_dir.join("manifest.json");
-    let json = serde_json::to_string_pretty(manifest).map_err(|e| io_err_msg(&e.to_string()))?;
+    let json = serde_json::to_string_pretty(manifest).map_err(|e| {
+        AvrError::new(ErrorCode::IoError, "序列化作业清单失败", "检查磁盘权限。").with_source(e)
+    })?;
     atomic_write(&path, json.as_bytes())?;
     Ok(())
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限。")
-}
-
-fn io_err_msg(msg: &str) -> AvrError {
-    AvrError::new(ErrorCode::IoError, msg.to_string(), "检查磁盘权限。")
+    AvrError::io(e, "检查磁盘权限。")
 }
 
 #[cfg(test)]

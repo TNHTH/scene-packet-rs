@@ -67,7 +67,7 @@ impl DataRoot {
             fs::write(
                 &meta_path,
                 serde_json::to_string_pretty(&meta).map_err(|e| {
-                    AvrError::new(ErrorCode::IoError, e.to_string(), "序列化失败。")
+                    AvrError::new(ErrorCode::IoError, "序列化失败", "检查磁盘权限。").with_source(e)
                 })?,
             )
             .map_err(io_err)?;
@@ -77,7 +77,7 @@ impl DataRoot {
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限与路径。")
+    AvrError::io(e, "检查磁盘权限与路径。")
 }
 
 /// 定位数据根：AVR_DATA_ROOT > avr.portable > %APPDATA%/root.txt

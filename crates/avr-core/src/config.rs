@@ -177,8 +177,9 @@ pub fn load_config(root: &DataRoot) -> Result<AppConfig, AvrError> {
 
 pub fn save_config(root: &DataRoot, cfg: &AppConfig) -> Result<(), AvrError> {
     root.ensure_layout()?;
-    let content = toml::to_string_pretty(cfg)
-        .map_err(|e| AvrError::new(ErrorCode::ConfigError, e.to_string(), "序列化配置失败。"))?;
+    let content = toml::to_string_pretty(cfg).map_err(|e| {
+        AvrError::new(ErrorCode::ConfigError, "序列化配置失败", "检查配置内容。").with_source(e)
+    })?;
     fs::write(root.config_path(), content).map_err(io_err)?;
     Ok(())
 }
@@ -192,7 +193,7 @@ pub fn effective_cache_dir(root: &DataRoot, cfg: &AppConfig) -> std::path::PathB
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限。")
+    AvrError::io(e, "检查磁盘权限。")
 }
 
 #[cfg(test)]

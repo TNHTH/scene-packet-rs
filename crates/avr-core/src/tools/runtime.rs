@@ -169,8 +169,7 @@ pub(crate) mod fake {
             _: &Path,
             out_wav: &Path,
         ) -> Result<(), AvrError> {
-            std::fs::write(out_wav, b"RIFF")
-                .map_err(|e| AvrError::new(crate::ErrorCode::IoError, e.to_string(), ""))
+            std::fs::write(out_wav, b"RIFF").map_err(|e| AvrError::io(e, ""))
         }
 
         async fn extract_metadata(
@@ -208,8 +207,7 @@ pub(crate) mod fake {
             _: &str,
             dest_wav: &Path,
         ) -> Result<(), AvrError> {
-            std::fs::write(dest_wav, b"RIFF")
-                .map_err(|e| AvrError::new(crate::ErrorCode::IoError, e.to_string(), ""))
+            std::fs::write(dest_wav, b"RIFF").map_err(|e| AvrError::io(e, ""))
         }
 
         fn asr_preset(&self, _: &PipelineContext, _: Option<&str>) -> Option<String> {
