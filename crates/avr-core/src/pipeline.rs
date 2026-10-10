@@ -112,18 +112,6 @@ pub async fn analyze(
     }
 }
 
-#[deprecated(note = "使用 analyze(ctx, &Source::Url(..), opts, deps)")]
-pub async fn analyze_url(ctx: &PipelineContext, url: &str) -> Result<AnalyzeResult, AvrError> {
-    analyze_url_with(ctx, url, &Deps::new(Arc::new(JobManager::new()))).await
-}
-
-#[deprecated(note = "使用 analyze(ctx, &Source::Local(..), opts, deps)")]
-pub async fn transcribe_local(
-    ctx: &PipelineContext,
-    path: &Path,
-) -> Result<AnalyzeResult, AvrError> {
-    transcribe_local_with(ctx, path, &Deps::new(Arc::new(JobManager::new()))).await
-}
 
 async fn analyze_url_with(
     ctx: &PipelineContext,
