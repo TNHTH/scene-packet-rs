@@ -197,7 +197,7 @@ impl YtDlpExtractor {
         end: f64,
         output: &Path,
     ) -> Result<PathBuf, AvrError> {
-        let section = format!("*{:.3}-{:.3}", start, end);
+        let section = format!("*{start:.3}-{end:.3}");
         let mut args = base_args(
             &self.cookies_from_browser,
             &self.cookies_file,

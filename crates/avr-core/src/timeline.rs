@@ -200,7 +200,7 @@ fn fmt_ts(seconds: f64) -> String {
     let h = (seconds / 3600.0).floor() as u32;
     let m = ((seconds % 3600.0) / 60.0).floor() as u32;
     let s = seconds % 60.0;
-    format!("{:02}:{:02}:{:06.3}", h, m, s).replace('.', ",")
+    format!("{h:02}:{m:02}:{s:06.3}").replace('.', ",")
 }
 
 pub fn format_timestamp(seconds: f64) -> String {
@@ -208,9 +208,9 @@ pub fn format_timestamp(seconds: f64) -> String {
     let m = ((seconds % 3600.0) / 60.0).floor() as u32;
     let s = (seconds % 60.0).floor() as u32;
     if h > 0 {
-        format!("{:02}:{:02}:{:02}", h, m, s)
+        format!("{h:02}:{m:02}:{s:02}")
     } else {
-        format!("{:02}:{:02}", m, s)
+        format!("{m:02}:{s:02}")
     }
 }
 

@@ -9,7 +9,7 @@ use crate::models::{CacheMetadata, Transcript, VideoInfo};
 use crate::timeline::segments_to_srt;
 
 pub fn cache_dir_name(platform: &str, video_id: &str) -> String {
-    format!("{}-{}", platform, video_id)
+    format!("{platform}-{video_id}")
 }
 
 pub fn find_cache_by_url(base_cache: &Path, url: &str) -> Option<PathBuf> {

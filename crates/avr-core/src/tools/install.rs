@@ -74,7 +74,7 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), AvrError> {
     }
     let data = std::fs::read(path).map_err(io_err)?;
     let hash = Sha256::digest(&data);
-    let got = format!("{:x}", hash);
+    let got = format!("{hash:x}");
     if got != expected.to_lowercase() {
         return Err(AvrError::new(
             ErrorCode::ToolNotReady,
