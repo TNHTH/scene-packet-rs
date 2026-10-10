@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::AppConfig;
@@ -111,9 +110,7 @@ impl YtDlpExtractor {
             for entry in std::fs::read_dir(dest_dir).into_iter().flatten().flatten() {
                 let p = entry.path();
                 if p.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .contains("subtitle")
+                    .is_some_and(|n| n.to_string_lossy().contains("subtitle"))
                     && p.extension()
                         .map(|e| e == ext.trim_start_matches('.'))
                         .unwrap_or(false)
@@ -345,10 +342,4 @@ fn merge_subs(info: &Value) -> std::collections::HashMap<String, Value> {
         }
     }
     merged
-}
-
-#[derive(Debug, Deserialize)]
-struct YtDlpJson {
-    id: Option<String>,
-    title: Option<String>,
 }

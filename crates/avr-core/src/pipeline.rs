@@ -15,7 +15,7 @@ use crate::jobs::{shared_job_manager, JobManifest, JobProgress};
 use crate::media::{media_key, MediaSource};
 use crate::models::{
     format_inline_text, truncate_utf8, AnalyzeResult, CacheMetadata, Transcript,
-    TRANSCRIPT_INLINE_LIMIT, TRANSCRIPT_PREVIEW_LIMIT,
+    TRANSCRIPT_INLINE_LIMIT,
 };
 use crate::paths::to_file_uri;
 use crate::root::DataRoot;

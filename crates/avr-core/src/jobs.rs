@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -107,6 +107,12 @@ impl JobManager {
         }
 
         result
+    }
+}
+
+impl Default for JobManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

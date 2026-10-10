@@ -87,7 +87,8 @@ pub fn suggest_visual_hints(
         });
     }
 
-    hints.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+    // total_cmp 对 NaN 也有全序，不会 panic。
+    hints.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
     hints.truncate(threshold_limit as usize);
     hints
 }
@@ -99,7 +100,7 @@ fn nearest_segment_text(transcript: &Transcript, t: f64) -> String {
         .min_by(|a, b| {
             let da = (a.start - t).abs();
             let db = (b.start - t).abs();
-            da.partial_cmp(&db).unwrap()
+            da.total_cmp(&db)
         })
         .map(|s| s.text.clone())
         .unwrap_or_default()
@@ -187,4 +188,41 @@ pub async fn resolve_visual_source(
         "无法获取视频画面源",
         "检查网络与 Cookie 设置后重试。",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{TranscriptSegment, TranscriptSource};
+
+    fn transcript(starts: &[f64]) -> Transcript {
+        Transcript {
+            language: "zh".into(),
+            source: TranscriptSource::Subtitle,
+            segments: starts
+                .iter()
+                .map(|&s| TranscriptSegment {
+                    start: s,
+                    end: s + 1.0,
+                    text: format!("seg {s}"),
+                })
+                .collect(),
+        }
+    }
+
+    /// 回归：场景分数或时间戳为 NaN 时不能 panic。
+    #[test]
+    fn nan_inputs_do_not_panic() {
+        let t = transcript(&[0.0, f64::NAN, 5.0]);
+        let scenes = [(1.0, f32::NAN), (f64::NAN, 0.9), (3.0, 0.5)];
+        let hints = suggest_visual_hints(&t, &scenes, 10);
+        assert_eq!(hints.len(), 3);
+        // 非 NaN 分数按降序排列
+        let finite: Vec<f32> = hints
+            .iter()
+            .map(|h| h.confidence)
+            .filter(|c| !c.is_nan())
+            .collect();
+        assert!(finite.windows(2).all(|w| w[0] >= w[1]));
+    }
 }

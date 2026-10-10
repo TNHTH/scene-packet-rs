@@ -158,13 +158,15 @@ pub async fn detect_scenes(
     Ok(parse_showinfo(&out.stderr))
 }
 
+static PTS_TIME_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"pts_time:([0-9.]+)").expect("valid regex"));
+
 fn parse_showinfo(stderr: &str) -> Vec<(f64, f32)> {
     let mut results = Vec::new();
-    let time_re = regex::Regex::new(r"pts_time:([0-9.]+)").unwrap();
     for line in stderr.lines() {
         if line.contains("showinfo") {
-            if let Some(m) = time_re.captures(line) {
-                let t = m.get(1).unwrap().as_str().parse::<f64>().unwrap_or(0.0);
+            if let Some(m) = PTS_TIME_RE.captures(line) {
+                let t = m[1].parse::<f64>().unwrap_or(0.0);
                 results.push((t, 1.0));
             }
         }

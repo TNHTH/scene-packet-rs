@@ -130,7 +130,9 @@ pub fn needs_first_run_setup(exe_dir: Option<&Path>) -> bool {
 /// 写入 root.txt 指针（事务：先 .tmp 再 rename）。
 pub fn set_root_pointer(target: &Path) -> Result<(), AvrError> {
     let pointer = root_pointer_path();
-    fs::create_dir_all(pointer.parent().unwrap()).map_err(io_err)?;
+    if let Some(parent) = pointer.parent() {
+        fs::create_dir_all(parent).map_err(io_err)?;
+    }
     let tmp = pointer.with_extension("txt.tmp");
     fs::write(&tmp, target.display().to_string()).map_err(io_err)?;
     fs::rename(&tmp, &pointer).map_err(io_err)?;

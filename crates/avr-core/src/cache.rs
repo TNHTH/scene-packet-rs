@@ -30,10 +30,11 @@ pub fn find_cache_by_url(base_cache: &Path, url: &str) -> Option<PathBuf> {
         let data: serde_json::Value = serde_json::from_str(&content).ok()?;
         let u = data.get("url").and_then(|v| v.as_str());
         let w = data.get("webpage_url").and_then(|v| v.as_str());
-        if u == Some(normalized) || w == Some(normalized) {
-            if path.join("transcript.json").exists() && path.join("metadata.json").exists() {
-                return Some(path);
-            }
+        if (u == Some(normalized) || w == Some(normalized))
+            && path.join("transcript.json").exists()
+            && path.join("metadata.json").exists()
+        {
+            return Some(path);
         }
     }
     None

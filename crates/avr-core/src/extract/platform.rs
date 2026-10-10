@@ -16,14 +16,14 @@ static BILI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"bilibili\.com/bangumi/",
     ]
     .iter()
-    .map(|p| Regex::new(p).unwrap())
+    .map(|p| Regex::new(p).expect("valid regex"))
     .collect()
 });
 
 static DOUYIN_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [r"douyin\.com", r"v\.douyin\.com", r"iesdouyin\.com"]
         .iter()
-        .map(|p| Regex::new(p).unwrap())
+        .map(|p| Regex::new(p).expect("valid regex"))
         .collect()
 });
 

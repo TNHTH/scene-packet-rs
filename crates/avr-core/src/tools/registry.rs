@@ -1,6 +1,6 @@
 //! 工具路径统一 API。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::config::AppConfig;
 use crate::error::{ffmpeg_missing, tool_not_ready, ytdlp_missing, AvrError};

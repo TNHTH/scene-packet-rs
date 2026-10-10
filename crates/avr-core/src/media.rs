@@ -1,6 +1,9 @@
 //! 媒体来源与 media_key 规则。
 
 use std::fs::File;
+use std::sync::LazyLock;
+
+use regex::Regex;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -84,20 +87,22 @@ pub fn platform_media_id(url: &str) -> Option<String> {
     None
 }
 
+static BV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"bv[0-9a-z]+").expect("valid regex"));
+static DOUYIN_VIDEO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/video/(\d+)").expect("valid regex"));
+static DOUYIN_MODAL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"modal_id=(\d+)").expect("valid regex"));
+
 fn regex_bv(s: &str) -> Option<String> {
-    use regex::Regex;
-    let re = Regex::new(r"bv[0-9a-z]+").unwrap();
-    re.find(s).map(|m| m.as_str().to_uppercase())
+    BV_RE.find(s).map(|m| m.as_str().to_uppercase())
 }
 
 fn regex_douyin_id(s: &str) -> Option<String> {
-    use regex::Regex;
-    let re = Regex::new(r"/video/(\d+)").unwrap();
-    if let Some(cap) = re.captures(s) {
+    if let Some(cap) = DOUYIN_VIDEO_RE.captures(s) {
         return cap.get(1).map(|m| m.as_str().to_string());
     }
-    let re2 = Regex::new(r"modal_id=(\d+)").unwrap();
-    re2.captures(s)
+    DOUYIN_MODAL_RE
+        .captures(s)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
 }
 

@@ -1,7 +1,6 @@
 //! 配置读写（TOML）。
 
 use std::fs;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -60,13 +59,13 @@ fn default_whisper_preset() -> String {
     "whisper-cpp-cpu".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OutputConfig {
     #[serde(default)]
     pub cache_dir: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolsConfig {
     #[serde(default)]
     pub ffmpeg_path: String,
@@ -144,26 +143,6 @@ impl Default for AsrConfig {
             default: default_auto(),
             active_preset: default_whisper_preset(),
             model_path: String::new(),
-        }
-    }
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self {
-            cache_dir: String::new(),
-        }
-    }
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self {
-            ffmpeg_path: String::new(),
-            ffprobe_path: String::new(),
-            ytdlp_path: String::new(),
-            whisper_cli_path: String::new(),
-            whisper_model_path: String::new(),
         }
     }
 }
