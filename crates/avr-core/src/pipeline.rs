@@ -112,7 +112,6 @@ pub async fn analyze(
     }
 }
 
-
 async fn analyze_url_with(
     ctx: &PipelineContext,
     url: &str,
