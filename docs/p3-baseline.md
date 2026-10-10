@@ -70,10 +70,16 @@ token 估算用 `avr_mcp::tokens::estimate_tokens` 启发式（不依赖 tokeniz
 
 ### 工具调用日志
 
-每次 MCP `tools/call` 写一行 JSON（`resources/read` 不记）：
+每次 MCP `tools/call` 生成一行 JSON（`resources/read` 不记）：
 
-- stderr：前缀 `mcp-call `，后接 JSON；
-- 文件：`<数据根>/logs/mcp-calls.jsonl`（追加写）。
+- **stderr**：总是写，前缀 `mcp-call `，后接 JSON；
+- **文件**：默认**关闭**。在数据根的 `config.toml` 里开启：
+
+  ```toml
+  [mcp]
+  call_log = true               # 追加到 <数据根>/logs/mcp-calls.jsonl
+  call_log_max_bytes = 5242880  # 可选，默认 5MB；超过后改名为 mcp-calls.jsonl.1（覆盖旧 .1）再新写
+  ```
 
 **绝不写 stdout**（stdio 传输的协议通道）。写日志失败不影响工具调用。
 
@@ -81,10 +87,19 @@ token 估算用 `avr_mcp::tokens::estimate_tokens` 启发式（不依赖 tokeniz
 |---|---|
 | `ts` | UTC 时间，RFC3339 秒精度 |
 | `tool` | 工具名 |
-| `media_key` | 参数里的 media_key，否则取返回 JSON 的 media_key；可缺省 |
-| `args` | 参数摘要：不含 media_key；字符串超过 120 字符截断；数组只记 `{"len":n}`；`cursor` 只记 `true` |
+| `media_key` | 参数里的 media_key，否则取返回 JSON 的 media_key；原样记录（派生 ID；是否脱敏待架构师定） |
+| `args` | 参数摘要，见下 |
 | `bytes` | 返回的 text content 字节数 + 图片 base64 长度 |
 | `response_mode` | 仅 analyze_media：实际采用的模式 |
 | `ok` | 协议成功且返回 JSON 不含 `"error": true` |
 
+`args` 摘要规则（stderr 与文件两路一致）：
+
+- URL 只记域名：`https://www.bilibili.com/video/BV…?…` → `url:www.bilibili.com`；
+- 本地路径只记扩展名：`C:\Users\…\clip.mp4` → `path:.mp4`（无扩展名记 `path:`）；
+  适用于 `source`、名字以 `path`/`url` 结尾的参数，以及任何包含 `://`、`/`、`\` 的字符串值；
+- 不含 media_key（单独成字段）；其他字符串超过 120 字符截断；数组只记 `{"len":n}`；`cursor` 只记 `true`。
+
 用途：统计客户端拿到索引后是否主动调用 `read_transcript` / `get_frame`。
+
+> 隐私提示：日志只做最小脱敏。**缓存目录本身保存了视频来源和转写全文**，介意的话请定期清理缓存，或把数据目录放在加密盘上。

@@ -47,7 +47,8 @@ fn is_error(v: &Value) -> bool {
 async fn mcp_tools_end_to_end_and_traversal_rejected() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut ctx = common::test_ctx(tmp.path());
-    // 有 ffmpeg 时用真实视频并让 get_frame / resource 真正截帧；否则只测文本链路。
+    ctx.config.mcp.call_log = true; // 文件日志默认关闭，这里显式开启以断言日志行
+                                    // 有 ffmpeg 时用真实视频并让 get_frame / resource 真正截帧；否则只测文本链路。
     let ff = common::ffmpeg_or_skip();
     let media = match &ff {
         Some(ff) => {
@@ -228,4 +229,32 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
     assert!(lines
         .iter()
         .any(|l| l["ok"] == false && l["media_key"] == ".."));
+    // 本地路径不以明文出现在日志里（source 只记扩展名）。
+    let raw = std::fs::read_to_string(&log_path).unwrap();
+    let media_name = media.file_name().unwrap().to_string_lossy().to_string();
+    let tmp_dir = tmp.path().display().to_string();
+    assert!(
+        !raw.contains(&media_name) && !raw.contains(&tmp_dir),
+        "日志含明文路径"
+    );
+    assert!(lines
+        .iter()
+        .filter(|l| l["tool"] == "analyze_media")
+        .all(|l| l["args"]["source"] == "path:.mp4"));
+}
+
+#[tokio::test]
+async fn call_log_file_off_by_default() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let ctx = common::test_ctx(tmp.path());
+    let client = connect(AvrMcpServer::new(ctx, common::fake_deps())).await;
+    let v = json_of(&call(&client, "read_transcript", json!({ "media_key": "nope" })).await);
+    assert!(v.is_object());
+    client.cancel().await.unwrap();
+    assert!(!tmp
+        .path()
+        .join("root")
+        .join("logs")
+        .join("mcp-calls.jsonl")
+        .exists());
 }

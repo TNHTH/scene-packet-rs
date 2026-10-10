@@ -100,7 +100,7 @@ fn default_delivery() -> String {
 #[tool_router]
 impl AvrMcpServer {
     pub fn new(ctx: PipelineContext, deps: Deps) -> Self {
-        let call_log = CallLog::in_logs_dir(&ctx.root.logs_dir());
+        let call_log = CallLog::from_config(&ctx.root.logs_dir(), &ctx.config.mcp);
         Self {
             ctx: Arc::new(ctx),
             deps,

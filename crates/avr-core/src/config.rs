@@ -30,18 +30,30 @@ pub struct McpConfig {
     /// 默认 2000（与当前 compact 相当的保守值），**待效果集确定**。
     #[serde(default = "default_auto_full_max_tokens")]
     pub auto_full_max_tokens: usize,
+    /// 是否把工具调用日志追加到 `<数据根>/logs/mcp-calls.jsonl`（默认关闭；stderr 总是写）。
+    #[serde(default)]
+    pub call_log: bool,
+    /// 文件日志轮转阈值（字节），超过后改名为 `.1`（覆盖旧 `.1`）。默认 5MB。
+    #[serde(default = "default_call_log_max_bytes")]
+    pub call_log_max_bytes: u64,
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
             auto_full_max_tokens: default_auto_full_max_tokens(),
+            call_log: false,
+            call_log_max_bytes: default_call_log_max_bytes(),
         }
     }
 }
 
 fn default_auto_full_max_tokens() -> usize {
     2000
+}
+
+fn default_call_log_max_bytes() -> u64 {
+    5 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
