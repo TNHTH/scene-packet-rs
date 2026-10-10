@@ -91,7 +91,7 @@ impl AvrMcpServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let cache = avr_core::config::effective_cache_dir(&self.ctx.root, &self.ctx.config)
             .join(&p.media_key);
-        let loaded = avr_core::cache::load_cached_transcript(&cache)
+        let loaded = avr_core::cache::load_cached_transcript(&cache, None)
             .map_err(|e| rmcp::ErrorData::internal_error(e.message, None))?;
         if loaded.is_none() {
             return Ok(CallToolResult::success(vec![Content::text(

@@ -12,6 +12,8 @@ use crate::extract::ytdlp::YtDlpExtractor;
 use crate::ffmpeg::{extract_audio_wav, probe_duration, FfmpegContext};
 use crate::models::{Transcript, VideoInfo};
 use crate::pipeline::PipelineContext;
+use crate::tools::registry::ToolRegistry;
+use crate::tools::ToolId;
 
 #[async_trait]
 pub trait Tools: Send + Sync {
@@ -47,6 +49,8 @@ pub trait Tools: Send + Sync {
     ) -> Result<(), AvrError>;
     /// 当前可用的 ASR 预设；未就绪返回 None。
     fn asr_preset(&self, ctx: &PipelineContext, platform: Option<&str>) -> Option<String>;
+    /// 工具版本指纹，用于缓存失效判断；工具不可用时返回 None。
+    fn version(&self, ctx: &PipelineContext, id: ToolId) -> Option<String>;
     /// 语音识别。
     async fn transcribe(
         &self,
@@ -105,16 +109,36 @@ impl Tools for RealTools {
         url: &str,
         dest_wav: &Path,
     ) -> Result<(), AvrError> {
-        YtDlpExtractor::new(&ctx.root, &ctx.config)?
+        let got = YtDlpExtractor::new(&ctx.root, &ctx.config)?
             .download_audio(url, dest_wav)
-            .await
-            .map(|_| ())
+            .await?;
+        // yt-dlp 可能按自己的规则命名产物；统一落到调用方要求的路径。
+        if got != dest_wav {
+            std::fs::rename(&got, dest_wav).map_err(|e| AvrError::io(e, "检查缓存目录权限。"))?;
+        }
+        Ok(())
     }
 
     fn asr_preset(&self, ctx: &PipelineContext, platform: Option<&str>) -> Option<String> {
         let asr = AsrService::new(ctx.root.clone(), ctx.config.clone());
         let preset = asr.active_preset(None, platform);
         asr.is_ready(&preset).then_some(preset)
+    }
+
+    /// 以可执行文件的大小与修改时间作为版本指纹：升级 / 替换二进制即失效，
+    /// 且不需要在异步上下文里同步拉起子进程。
+    fn version(&self, ctx: &PipelineContext, id: ToolId) -> Option<String> {
+        let path = ToolRegistry::new(&ctx.root, &ctx.config)
+            .tool_path(id)
+            .ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        Some(format!("{}:{mtime}", meta.len()))
     }
 
     async fn transcribe(
@@ -143,6 +167,10 @@ pub(crate) mod fake {
         pub with_subtitles: bool,
         pub metadata_calls: AtomicUsize,
         pub transcribe_calls: AtomicUsize,
+        /// download_audio / extract_audio 调用次数（媒体获取）。
+        pub audio_calls: AtomicUsize,
+        /// whisper 版本，测试可在两次调用之间修改。
+        pub asr_version: parking_lot::Mutex<String>,
     }
 
     fn transcript(source: TranscriptSource) -> Transcript {
@@ -169,6 +197,7 @@ pub(crate) mod fake {
             _: &Path,
             out_wav: &Path,
         ) -> Result<(), AvrError> {
+            self.audio_calls.fetch_add(1, Ordering::SeqCst);
             std::fs::write(out_wav, b"RIFF").map_err(|e| AvrError::io(e, ""))
         }
 
@@ -207,11 +236,16 @@ pub(crate) mod fake {
             _: &str,
             dest_wav: &Path,
         ) -> Result<(), AvrError> {
+            self.audio_calls.fetch_add(1, Ordering::SeqCst);
             std::fs::write(dest_wav, b"RIFF").map_err(|e| AvrError::io(e, ""))
         }
 
         fn asr_preset(&self, _: &PipelineContext, _: Option<&str>) -> Option<String> {
             Some("fake-asr".into())
+        }
+
+        fn version(&self, _: &PipelineContext, id: ToolId) -> Option<String> {
+            (id == ToolId::Whisper).then(|| self.asr_version.lock().clone())
         }
 
         async fn transcribe(

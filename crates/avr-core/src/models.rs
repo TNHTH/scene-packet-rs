@@ -75,9 +75,15 @@ pub enum TranscriptSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
+    /// 缓存格式版本，见 `cache::CACHE_SCHEMA`；旧缓存缺省为 0（视为未命中）。
+    #[serde(default)]
+    pub cache_schema: u32,
     pub app_version: String,
     pub asr_provider: Option<String>,
     pub asr_model: String,
+    /// 生成转写时 ASR 引擎的版本指纹；字幕来源为空。
+    #[serde(default)]
+    pub asr_version: String,
     pub video_id: String,
     pub platform: String,
     pub source: String,
