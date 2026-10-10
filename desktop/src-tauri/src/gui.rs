@@ -8,6 +8,7 @@ use avr_core::root::{needs_first_run_setup, set_root_pointer, DataRoot};
 use avr_core::tools::install::download_and_install;
 use avr_core::tools::manifest::{builtin_licenses, builtin_manifests};
 use avr_core::tools::registry::ToolRegistry;
+use avr_core::tools::ToolId;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -127,13 +128,13 @@ fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
     let cfg = state.config.lock().clone();
     let reg = ToolRegistry::new(&state.root.lock(), &cfg);
     let manifests = builtin_manifests();
-    ["ffmpeg", "ffprobe", "yt-dlp", "whisper"]
-        .iter()
+    ToolId::ALL
+        .into_iter()
         .map(|id| {
             let st = reg.tool_status(id);
             let url = manifests
                 .iter()
-                .find(|m| *id == "whisper" && m.id.starts_with("whisper") || m.id == *id)
+                .find(|m| id.matches_manifest(&m.id))
                 .map(|m| m.url.clone());
             ToolStatusDto {
                 id: id.to_string(),
@@ -149,12 +150,11 @@ fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
 #[tauri::command]
 fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Result<(), String> {
     let mut cfg = state.config.lock().clone();
-    match tool_id.as_str() {
-        "ffmpeg" => cfg.tools.ffmpeg_path = path,
-        "ffprobe" => cfg.tools.ffprobe_path = path,
-        "yt-dlp" => cfg.tools.ytdlp_path = path,
-        "whisper" => cfg.tools.whisper_cli_path = path,
-        _ => return Err("未知工具".into()),
+    match ToolId::parse(&tool_id).ok_or_else(|| "未知工具".to_string())? {
+        ToolId::Ffmpeg => cfg.tools.ffmpeg_path = path,
+        ToolId::Ffprobe => cfg.tools.ffprobe_path = path,
+        ToolId::YtDlp => cfg.tools.ytdlp_path = path,
+        ToolId::Whisper => cfg.tools.whisper_cli_path = path,
     }
     save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
     *state.config.lock() = cfg;
@@ -163,9 +163,10 @@ fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Re
 
 #[tauri::command]
 async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> Result<String, String> {
+    let id = ToolId::parse(&tool_id).ok_or_else(|| "未知工具".to_string())?;
     let manifest = builtin_manifests()
         .into_iter()
-        .find(|m| tool_id == "whisper" && m.id.starts_with("whisper") || m.id == tool_id)
+        .find(|m| id.matches_manifest(&m.id))
         .ok_or_else(|| "未找到安装清单".to_string())?;
     let root_path = state.root.lock().path.clone();
     download_and_install(&manifest, &root_path)

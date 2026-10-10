@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::config::AppConfig;
 use crate::error::{ffmpeg_missing, tool_not_ready, ytdlp_missing, AvrError};
 use crate::root::DataRoot;
-use crate::tools::detect;
+use crate::tools::{detect, ToolId};
 
 pub struct ToolRegistry {
     root: DataRoot,
@@ -62,26 +62,22 @@ impl ToolRegistry {
         }
     }
 
-    pub fn tool_status(&self, id: &str) -> ToolStatus {
-        let path_result = match id {
-            "ffmpeg" => self.ffmpeg_path(),
-            "ffprobe" => self.ffprobe_path(),
-            "yt-dlp" => self.ytdlp_path(),
-            "whisper" => self.whisper_cli_path(),
-            _ => {
-                return ToolStatus {
-                    id: id.to_string(),
-                    ready: false,
-                    path: None,
-                    version: None,
-                }
-            }
-        };
+    pub fn tool_path(&self, id: ToolId) -> Result<PathBuf, AvrError> {
+        match id {
+            ToolId::Ffmpeg => self.ffmpeg_path(),
+            ToolId::Ffprobe => self.ffprobe_path(),
+            ToolId::YtDlp => self.ytdlp_path(),
+            ToolId::Whisper => self.whisper_cli_path(),
+        }
+    }
+
+    pub fn tool_status(&self, id: ToolId) -> ToolStatus {
+        let path_result = self.tool_path(id);
         let ok = path_result.is_ok();
         let path = path_result.ok();
         let version = path.as_ref().and_then(|p| detect::detect_version(p).ok());
         ToolStatus {
-            id: id.to_string(),
+            id,
             ready: ok,
             path,
             version,
@@ -91,7 +87,7 @@ impl ToolRegistry {
 
 #[derive(Debug, Clone)]
 pub struct ToolStatus {
-    pub id: String,
+    pub id: ToolId,
     pub ready: bool,
     pub path: Option<PathBuf>,
     pub version: Option<String>,

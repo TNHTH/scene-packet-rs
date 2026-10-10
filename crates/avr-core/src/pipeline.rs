@@ -5,13 +5,10 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use crate::asr::AsrService;
 use crate::cache::{find_cache_by_url, load_cached_transcript, save_cache};
 use crate::config::{effective_cache_dir, load_config, AppConfig};
 use crate::error::{no_transcript_asr_not_configured, unsupported_url, AvrError};
 use crate::extract::platform::detect_platform;
-use crate::extract::ytdlp::YtDlpExtractor;
-use crate::ffmpeg::{extract_audio_wav, probe_duration, FfmpegContext};
 use crate::jobs::{JobManager, JobManifest, JobProgress};
 use crate::media::{media_key, MediaSource};
 use crate::models::{
@@ -20,6 +17,7 @@ use crate::models::{
 };
 use crate::paths::to_file_uri;
 use crate::root::DataRoot;
+use crate::tools::{RealTools, Tools};
 use crate::VERSION;
 
 pub struct PipelineContext {
@@ -70,21 +68,37 @@ impl AnalyzeOptions {
 #[derive(Clone)]
 pub struct Deps {
     jobs: Arc<JobManager>,
+    tools: Arc<dyn Tools>,
 }
 
 impl Deps {
+    /// 默认使用真实外部工具（`RealTools`）。
     pub fn new(jobs: Arc<JobManager>) -> Self {
-        Self { jobs }
+        Self {
+            jobs,
+            tools: Arc::new(RealTools),
+        }
+    }
+
+    /// 替换外部工具实现（测试或自定义后端）。
+    pub fn with_tools(mut self, tools: Arc<dyn Tools>) -> Self {
+        self.tools = tools;
+        self
     }
 
     pub fn jobs(&self) -> &Arc<JobManager> {
         &self.jobs
     }
 
-    /// 测试用：独立的 JobManager。
+    pub fn tools(&self) -> &Arc<dyn Tools> {
+        &self.tools
+    }
+
+    /// 测试用：独立的 JobManager + 默认假工具。
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
         Self::new(Arc::new(JobManager::new()))
+            .with_tools(Arc::new(crate::tools::runtime::fake::FakeTools::default()))
     }
 }
 
@@ -163,11 +177,15 @@ async fn run_url_pipeline(
     key: &str,
 ) -> Result<AnalyzeResult, AvrError> {
     let mgr = &deps.jobs;
-    mgr.emit(JobProgress::Stage {
-        media_key: key.to_string(),
-        stage: "checking_cache".into(),
-        percent: 5,
-    });
+    let tools = &deps.tools;
+    let stage = |stage: &str, percent: u8| {
+        mgr.emit(JobProgress::Stage {
+            media_key: key.to_string(),
+            stage: stage.into(),
+            percent,
+        })
+    };
+    stage("checking_cache", 5);
 
     if let Some(hit) = find_cache_by_url(&effective_cache_dir(&ctx.root, &ctx.config), url) {
         if load_cached_transcript(&hit)?.is_some() {
@@ -175,62 +193,37 @@ async fn run_url_pipeline(
         }
     }
 
-    if let Some(cached) = load_cached_transcript(item_cache)? {
-        let (video, trans, _) = cached;
+    if let Some((video, trans, _)) = load_cached_transcript(item_cache)? {
         return Ok(make_analyze_result(&video, &trans, item_cache, key));
     }
 
-    mgr.emit(JobProgress::Stage {
-        media_key: key.to_string(),
-        stage: "extracting".into(),
-        percent: 20,
-    });
+    stage("extracting", 20);
+    let (video, info) = tools.extract_metadata(ctx, url).await?;
 
-    let extractor = YtDlpExtractor::new(&ctx.root, &ctx.config)?;
-    let (video, info) = extractor.extract_metadata_with_info(url).await?;
+    stage("subtitles", 40);
+    let subtitles = tools
+        .fetch_subtitles(ctx, url, item_cache, &info)
+        .await?
+        .filter(|t| !t.segments.is_empty());
 
-    mgr.emit(JobProgress::Stage {
-        media_key: key.to_string(),
-        stage: "subtitles".into(),
-        percent: 40,
-    });
-
-    let mut transcript = extractor
-        .fetch_subtitles_with_info(url, item_cache, &info)
-        .await?;
-    let mut asr_provider: Option<String> = Some("subtitle".into());
-    let mut asr_model = String::new();
-
-    if transcript.is_none()
-        || transcript
-            .as_ref()
-            .map(|t| t.segments.is_empty())
-            .unwrap_or(true)
-    {
-        let asr = AsrService::new(ctx.root.clone(), ctx.config.clone());
-        let preset = asr.active_preset(None, Some(video.platform.as_str()));
-        if !asr.is_ready(&preset) {
-            return Err(no_transcript_asr_not_configured());
+    let (transcript, asr_provider, asr_model) = match subtitles {
+        Some(t) => (t, "subtitle".to_string(), String::new()),
+        None => {
+            let platform = Some(video.platform.as_str());
+            let preset = tools
+                .asr_preset(ctx, platform)
+                .ok_or_else(no_transcript_asr_not_configured)?;
+            stage("asr", 60);
+            let audio_path = item_cache.join("audio.wav");
+            tools.download_audio(ctx, url, &audio_path).await?;
+            let t = tools.transcribe(ctx, &audio_path, platform).await?;
+            (t, preset, ctx.config.tools.whisper_model_path.clone())
         }
-        mgr.emit(JobProgress::Stage {
-            media_key: key.to_string(),
-            stage: "asr".into(),
-            percent: 60,
-        });
-        let audio_path = item_cache.join("audio.wav");
-        extractor.download_audio(url, &audio_path).await?;
-        transcript = Some(
-            asr.transcribe(&audio_path, None, Some(video.platform.as_str()))
-                .await?,
-        );
-        asr_provider = Some(preset);
-        asr_model = ctx.config.tools.whisper_model_path.clone();
-    }
+    };
 
-    let transcript = transcript.ok_or_else(no_transcript_asr_not_configured)?;
     let metadata = CacheMetadata {
         app_version: VERSION.to_string(),
-        asr_provider,
+        asr_provider: Some(asr_provider),
         asr_model,
         video_id: video.id.clone(),
         platform: video.platform.as_str().to_string(),
@@ -257,27 +250,32 @@ async fn transcribe_local_with(
     path: &Path,
     deps: &Deps,
 ) -> Result<AnalyzeResult, AvrError> {
-    let ffmpeg = FfmpegContext::resolve(&ctx.root, &ctx.config)?;
-    let duration = probe_duration(&ffmpeg, path).await.ok();
+    let duration = deps.tools.probe_duration(ctx, path).await.ok();
     let key = media_key(
         &MediaSource::LocalFile {
             path: path.to_path_buf(),
         },
         duration,
     )?;
-    let base_cache = effective_cache_dir(&ctx.root, &ctx.config);
-    let item_cache = base_cache.join(&key);
+    let item_cache = effective_cache_dir(&ctx.root, &ctx.config).join(&key);
 
     let path_clone = path.to_path_buf();
     let ctx_clone = ctx.clone();
+    let deps_clone = deps.clone();
     let item_cache_run = item_cache.clone();
     let key_run = key.clone();
 
     deps.jobs
         .run_once(&key, &item_cache, || async move {
-            run_local_pipeline(&ctx_clone, &path_clone, &item_cache_run, &key_run)
-                .await
-                .map(|_| ())
+            run_local_pipeline(
+                &ctx_clone,
+                &deps_clone,
+                &path_clone,
+                &item_cache_run,
+                &key_run,
+            )
+            .await
+            .map(|_| ())
         })
         .await?;
 
@@ -286,6 +284,7 @@ async fn transcribe_local_with(
 
 async fn run_local_pipeline(
     ctx: &PipelineContext,
+    deps: &Deps,
     path: &Path,
     item_cache: &Path,
     key: &str,
@@ -294,19 +293,16 @@ async fn run_local_pipeline(
         return Ok(make_analyze_result(&video, &trans, item_cache, key));
     }
 
-    let ffmpeg = FfmpegContext::resolve(&ctx.root, &ctx.config)?;
-    let duration = probe_duration(&ffmpeg, path).await.unwrap_or(0.0);
+    let tools = &deps.tools;
+    let duration = tools.probe_duration(ctx, path).await.unwrap_or(0.0);
     let audio_path = item_cache.join("audio.wav");
     std::fs::create_dir_all(item_cache).ok();
-    extract_audio_wav(&ffmpeg, path, &audio_path).await?;
+    tools.extract_audio(ctx, path, &audio_path).await?;
 
-    let asr = AsrService::new(ctx.root.clone(), ctx.config.clone());
-    let preset = asr.active_preset(None, None);
-    if !asr.is_ready(&preset) {
-        return Err(no_transcript_asr_not_configured());
-    }
-    let transcript = asr.transcribe(&audio_path, None, None).await?;
-
+    let preset = tools
+        .asr_preset(ctx, None)
+        .ok_or_else(no_transcript_asr_not_configured)?;
+    let transcript = tools.transcribe(ctx, &audio_path, None).await?;
     let video = crate::models::VideoInfo {
         id: key.to_string(),
         title: path
@@ -465,5 +461,71 @@ mod tests {
         let src = Source::Url("https://www.youtube.com/watch?v=x".into());
         let r = analyze(&ctx, &src, &AnalyzeOptions::new(), &Deps::for_test()).await;
         assert!(matches!(r, Err(ref e) if e.code == crate::ErrorCode::UnsupportedUrl));
+    }
+
+    fn test_ctx(tmp: &tempfile::TempDir) -> PipelineContext {
+        PipelineContext {
+            root: DataRoot {
+                path: tmp.path().to_path_buf(),
+            },
+            config: AppConfig::default(),
+        }
+    }
+
+    /// P1-3：不装任何外部程序，用 FakeTools 跑通 URL 流水线（字幕路径）并验证缓存复用。
+    #[tokio::test]
+    async fn url_pipeline_runs_with_fake_tools_and_reuses_cache() {
+        use crate::tools::runtime::fake::FakeTools;
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = test_ctx(&tmp);
+        let fake = Arc::new(FakeTools {
+            with_subtitles: true,
+            ..Default::default()
+        });
+        let deps = Deps::new(Arc::new(JobManager::new())).with_tools(fake.clone());
+        let src = Source::Url("https://www.bilibili.com/video/BV1fake".into());
+
+        let r = analyze(&ctx, &src, &AnalyzeOptions::new(), &deps)
+            .await
+            .unwrap();
+        assert_eq!(r.video.title, "假视频");
+        let t = r.transcript.as_ref().unwrap();
+        assert_eq!(t.source, crate::models::TranscriptSource::Subtitle);
+        assert!(std::path::Path::new(&r.transcript_path).exists());
+
+        let again = analyze(&ctx, &src, &AnalyzeOptions::new(), &deps)
+            .await
+            .unwrap();
+        assert_eq!(again.media_key, r.media_key);
+        assert_eq!(
+            fake.metadata_calls.load(Ordering::SeqCst),
+            1,
+            "第二次命中缓存"
+        );
+        assert_eq!(fake.transcribe_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// P1-3：本地文件走 ASR 路径，平台标记为 Local。
+    #[tokio::test]
+    async fn local_pipeline_runs_asr_with_fake_tools() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = test_ctx(&tmp);
+        let media = tmp.path().join("clip.mp4");
+        std::fs::write(&media, b"fake").unwrap();
+        let r = analyze(
+            &ctx,
+            &Source::Local(media),
+            &AnalyzeOptions::new(),
+            &Deps::for_test(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.video.platform, crate::models::Platform::Local);
+        assert_eq!(
+            r.transcript.unwrap().source,
+            crate::models::TranscriptSource::Asr
+        );
     }
 }

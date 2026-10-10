@@ -7,6 +7,7 @@ use avr_core::pipeline::compact_mcp_payload;
 use crate::state::AppState;
 use avr_core::root::resolve_data_root;
 use avr_core::tools::registry::ToolRegistry;
+use avr_core::tools::ToolId;
 
 pub fn run_transcribe(path: &str) -> i32 {
     match run_transcribe_inner(path) {
@@ -95,7 +96,7 @@ pub fn run_doctor() -> i32 {
             root.ensure_layout().ok();
             if let Ok(cfg) = load_config(&root) {
                 let reg = ToolRegistry::new(&root, &cfg);
-                for id in ["ffmpeg", "ffprobe", "yt-dlp", "whisper"] {
+                for id in ToolId::ALL {
                     let st = reg.tool_status(id);
                     println!(
                         "  {}: {} {}",
