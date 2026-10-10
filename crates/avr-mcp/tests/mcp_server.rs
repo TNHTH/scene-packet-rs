@@ -81,6 +81,18 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
     let compact = json_of(&call(&client, "analyze_media", json!({ "source": src })).await);
     assert!(!is_error(&compact), "{compact}");
     assert!(compact.get("text").is_some() && compact.get("sample_segments").is_some());
+    assert_eq!(compact["response_mode"], "compact");
+
+    // 显式 auto：基线转写很短（远低于默认 2000），直接返回 full。
+    let auto = json_of(
+        &call(
+            &client,
+            "analyze_media",
+            json!({ "source": src, "response_mode": "auto" }),
+        )
+        .await,
+    );
+    assert_eq!(auto["response_mode"], "full", "{auto}");
 
     // 显式 index。
     let index = json_of(
@@ -97,6 +109,7 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
 
     // read_transcript 分页取回全部分段。
     let mut total = 0;
+    let mut pages = 0;
     let mut cursor: Option<String> = None;
     loop {
         let mut args = json!({ "media_key": key, "max_chars": 300 });
@@ -104,6 +117,7 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
             args["cursor"] = json!(c);
         }
         let page = json_of(&call(&client, "read_transcript", args).await);
+        pages += 1;
         assert!(!is_error(&page), "{page}");
         total += page["segments"].as_array().unwrap().len();
         match page.get("nextCursor").and_then(Value::as_str) {
@@ -180,4 +194,38 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
     }
 
     client.cancel().await.unwrap();
+
+    // 调用日志：每次 tools/call 一行 JSON（resources/read 不记）。
+    let log_path = tmp.path().join("root").join("logs").join("mcp-calls.jsonl");
+    let lines: Vec<Value> = std::fs::read_to_string(&log_path)
+        .expect("调用日志文件")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("每行是 JSON"))
+        .collect();
+    let calls = 3 + pages + usize::from(ff.is_some()) + 7 * 4;
+    assert_eq!(lines.len(), calls, "日志行数应等于工具调用次数");
+    for l in &lines {
+        for k in ["ts", "tool", "args", "bytes", "ok"] {
+            assert!(l.get(k).is_some(), "缺字段 {k}: {l}");
+        }
+    }
+    let modes: Vec<_> = lines
+        .iter()
+        .filter(|l| l["tool"] == "analyze_media")
+        .map(|l| l["response_mode"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(modes, ["compact", "full", "index"]);
+    assert!(lines
+        .iter()
+        .all(|l| l["tool"] != "analyze_media" || l["media_key"] == json!(key)));
+    let rt = lines
+        .iter()
+        .find(|l| l["tool"] == "read_transcript")
+        .unwrap();
+    assert_eq!(rt["media_key"], json!(key));
+    assert_eq!(rt["args"]["max_chars"], 300);
+    assert!(rt["bytes"].as_u64().unwrap() > 0 && rt["ok"] == true);
+    assert!(lines
+        .iter()
+        .any(|l| l["ok"] == false && l["media_key"] == ".."));
 }

@@ -1,8 +1,9 @@
 //! MCP 服务（rmcp）：工具与 resource 实现。desktop 只负责构造依赖并在 stdio 上启动；
 //! 这里不依赖 Tauri，可在 Linux 上做进程内集成测试。
 
-use crate::index::{frame_ref, parse_frame_uri, read_transcript, summary_index, FrameRef};
-use crate::payload::{compact_mcp_payload, full_mcp_payload};
+use crate::calllog::{self, CallLog};
+use crate::index::{frame_ref, parse_frame_uri, read_transcript, FrameRef};
+use crate::mode::{render, ResponseMode};
 use avr_core::error::AvrError;
 use avr_core::frames::{CapturedFrame, FrameDelivery};
 use avr_core::media::MediaKey;
@@ -12,15 +13,16 @@ use avr_core::pipeline::{
 use rmcp::transport::stdio;
 use rmcp::{
     handler::server::router::tool::ToolRouter,
-    handler::server::tool::Parameters,
+    handler::server::tool::{Parameters, ToolCallContext},
     model::{
-        AnnotateAble, CallToolResult, Content, Implementation, ListResourceTemplatesResult,
-        PaginatedRequestParam, ProtocolVersion, RawResourceTemplate, ReadResourceRequestParam,
-        ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+        AnnotateAble, CallToolRequestParam, CallToolResult, Content, Implementation,
+        ListResourceTemplatesResult, ListToolsResult, PaginatedRequestParam, ProtocolVersion,
+        RawResourceTemplate, ReadResourceRequestParam, ReadResourceResult, ResourceContents,
+        ServerCapabilities, ServerInfo,
     },
     schemars,
     service::RequestContext,
-    tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt,
+    tool, tool_router, RoleServer, ServerHandler, ServiceExt,
 };
 use serde::Deserialize;
 use std::future::Future;
@@ -31,21 +33,19 @@ use std::sync::Arc;
 pub struct AvrMcpServer {
     ctx: Arc<PipelineContext>,
     deps: Deps,
+    call_log: CallLog,
     tool_router: ToolRouter<Self>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct AnalyzeMediaParams {
     source: String,
-    /// compact（默认）| index（摘要索引，正文用 read_transcript 按需读取）| full
-    #[serde(default = "default_compact")]
-    response_mode: String,
+    /// compact（默认）| index（摘要索引，正文用 read_transcript 按需读取）| full |
+    /// auto（转写估算 token ≤ 配置 mcp.auto_full_max_tokens 时 full，否则 index）
+    #[serde(default)]
+    response_mode: Option<String>,
     #[serde(default = "default_max_inline")]
     max_inline_chars: usize,
-}
-
-fn default_compact() -> String {
-    "compact".into()
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -100,15 +100,17 @@ fn default_delivery() -> String {
 #[tool_router]
 impl AvrMcpServer {
     pub fn new(ctx: PipelineContext, deps: Deps) -> Self {
+        let call_log = CallLog::in_logs_dir(&ctx.root.logs_dir());
         Self {
             ctx: Arc::new(ctx),
             deps,
+            call_log,
             tool_router: Self::tool_router(),
         }
     }
 
     #[tool(
-        description = "从 B站/抖音 URL 或本地文件提取转写。默认 compact；response_mode=index 只返回摘要索引（分段时间范围、一句话概要、帧编号），正文再用 read_transcript 按需读取"
+        description = "从 B站/抖音 URL 或本地文件提取转写。默认 compact；response_mode=index 只返回摘要索引（分段时间范围、一句话概要、帧编号），正文再用 read_transcript 按需读取；response_mode=auto 时短视频直接全文、长视频返回索引；full 返回全部"
     )]
     async fn analyze_media(
         &self,
@@ -320,11 +322,15 @@ impl AvrMcpServer {
 
         match result {
             Ok(r) => {
-                let json = match p.response_mode.as_str() {
-                    "full" => full_mcp_payload(&r),
-                    "index" => summary_index(&r),
-                    _ => compact_mcp_payload(&r, p.max_inline_chars),
-                };
+                let (mut json, resolved) = render(
+                    &r,
+                    ResponseMode::parse(p.response_mode.as_deref()),
+                    p.max_inline_chars,
+                    self.ctx.config.mcp.auto_full_max_tokens,
+                );
+                if let Some(obj) = json.as_object_mut() {
+                    obj.insert("response_mode".into(), resolved.as_str().into());
+                }
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string(&json).unwrap_or_default(),
                 )]))
@@ -342,8 +348,48 @@ impl AvrMcpServer {
     }
 }
 
-#[tool_handler]
 impl ServerHandler for AvrMcpServer {
+    // 不用 #[tool_handler]：手写 call_tool 以便每次调用记一行日志（stderr + logs/mcp-calls.jsonl）。
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParam,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let tool = request.name.to_string();
+        let args = request.arguments.clone();
+        let tcc = ToolCallContext::new(self, request, context);
+        let result = self.tool_router.call(tcc).await;
+        let (texts, image_bytes): (Vec<&str>, usize) = match &result {
+            Ok(r) => (
+                r.content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+                    .collect(),
+                r.content
+                    .iter()
+                    .filter_map(|c| c.as_image().map(|i| i.data.len()))
+                    .sum(),
+            ),
+            Err(_) => (Vec::new(), 0),
+        };
+        self.call_log.write(&calllog::record(
+            &tool,
+            args.as_ref(),
+            &texts,
+            image_bytes,
+            result.is_ok(),
+        ));
+        result
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, rmcp::ErrorData> {
+        Ok(ListToolsResult::with_all_items(self.tool_router.list_all()))
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::default(),

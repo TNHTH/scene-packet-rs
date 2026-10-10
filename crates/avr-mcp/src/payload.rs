@@ -58,11 +58,11 @@ pub fn full_mcp_payload(result: &AnalyzeResult) -> serde_json::Value {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use avr_core::models::{Platform, Transcript, TranscriptSegment, VideoInfo};
 
-    fn sample(text: &str) -> AnalyzeResult {
+    pub(crate) fn sample(text: &str) -> AnalyzeResult {
         AnalyzeResult {
             video: VideoInfo {
                 id: "id".into(),

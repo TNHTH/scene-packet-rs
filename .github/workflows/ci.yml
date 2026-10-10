@@ -34,7 +34,7 @@ jobs:
         run: cargo test -p avr-mcp -- --nocapture
       - name: Token stats (o200k_base, reference only)
         if: matrix.toolchain == 'stable'
-        run: cargo test -p avr-mcp --test baseline -- --ignored --nocapture token_stats
+        run: cargo test -p avr-mcp --test baseline -- --ignored --nocapture
 
   desktop:
     name: desktop (Windows clippy / test)

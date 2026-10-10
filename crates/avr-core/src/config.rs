@@ -19,6 +19,29 @@ pub struct AppConfig {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// MCP 服务配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// `response_mode=auto` 时，转写原文估算 token 数不超过此值就直接返回 full，否则返回 index。
+    /// 默认 2000（与当前 compact 相当的保守值），**待效果集确定**。
+    #[serde(default = "default_auto_full_max_tokens")]
+    pub auto_full_max_tokens: usize,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            auto_full_max_tokens: default_auto_full_max_tokens(),
+        }
+    }
+}
+
+fn default_auto_full_max_tokens() -> usize {
+    2000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +125,7 @@ fn default_hint_limit() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            mcp: McpConfig::default(),
             extractor: ExtractorConfig {
                 name: default_ytdlp(),
                 cookies_from_browser: default_none(),

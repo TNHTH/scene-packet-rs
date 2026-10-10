@@ -202,3 +202,38 @@ fn token_stats() {
         );
     }
 }
+
+/// 启发式 token 估算与 o200k_base 的偏差（参考值，不做断言门槛以外的约束）。
+/// `cargo test -p avr-mcp --test baseline -- --ignored --nocapture heuristic_vs_o200k`
+#[test]
+#[ignore]
+fn heuristic_vs_o200k() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let media = tmp.path().join("clip.mp4");
+    std::fs::write(&media, b"fake").unwrap();
+    let result = rt.block_on(run_pipeline(tmp.path(), &media));
+    let baseline_text = result.transcript.as_ref().unwrap().full_text();
+    let bpe = tiktoken_rs::o200k_base().unwrap();
+    let samples = [
+        ("baseline_transcript", baseline_text),
+        (
+            "zh_paragraph",
+            "今天我们来聊一聊如何在本地部署语音识别模型。首先需要准备显卡驱动，然后下载模型文件，最后运行转写命令并检查输出结果。".to_string(),
+        ),
+        (
+            "en_paragraph",
+            "In this video we walk through setting up a local speech recognition pipeline, downloading the model, and checking the transcript output.".to_string(),
+        ),
+        (
+            "mixed",
+            "我们用 whisper.cpp 的 large-v3 模型，在 RTX 4060 上转写 10 分钟的视频大约需要 1 分钟。".to_string(),
+        ),
+    ];
+    for (name, text) in samples {
+        let h = avr_mcp::tokens::estimate_tokens(&text);
+        let t = bpe.encode_with_special_tokens(&text).len();
+        let dev = (h as f64 - t as f64) / t as f64 * 100.0;
+        println!("heuristic-vs-o200k {name}: heuristic={h} o200k={t} deviation={dev:+.1}%");
+    }
+}
