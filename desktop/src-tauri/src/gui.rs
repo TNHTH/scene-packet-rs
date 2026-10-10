@@ -1,10 +1,10 @@
 //! Tauri GUI。
 
-use crate::state::SharedState;
-use avr_core::config::{load_config, save_config, AppConfig};
+use crate::state::{AppState, SharedState};
+use avr_core::config::{save_config, AppConfig};
 use avr_core::jobs::JobProgress;
-use avr_core::pipeline::{analyze, compact_mcp_payload, AnalyzeOptions, Deps, Source};
-use avr_core::root::{needs_first_run_setup, resolve_data_root, set_root_pointer, DataRoot};
+use avr_core::pipeline::{analyze, compact_mcp_payload, AnalyzeOptions, Source};
+use avr_core::root::{needs_first_run_setup, set_root_pointer, DataRoot};
 use avr_core::tools::install::download_and_install;
 use avr_core::tools::manifest::{builtin_licenses, builtin_manifests};
 use avr_core::tools::registry::ToolRegistry;
@@ -30,17 +30,7 @@ struct LicenseDto {
 }
 
 pub fn run_gui() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_dir = exe.parent();
-
-    let root = resolve_data_root(exe_dir).map_err(|e| e.format_user())?;
-    root.ensure_layout().map_err(|e| e.format_user())?;
-    let config = load_config(&root).map_err(|e| e.format_user())?;
-
-    let state: SharedState = Arc::new(crate::state::AppState {
-        root: parking_lot::Mutex::new(root),
-        config: parking_lot::Mutex::new(config),
-    });
+    let state: SharedState = Arc::new(AppState::load().map_err(|e| e.format_user())?);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tauri::Builder::default()
@@ -203,6 +193,7 @@ async fn start_transcribe(
     state: State<'_, SharedState>,
 ) -> Result<String, String> {
     let ctx = state.pipeline_ctx();
+    let deps = state.deps().clone();
     let app_handle = app.clone();
     tokio::spawn(async move {
         let _ = app_handle.emit(
@@ -217,7 +208,7 @@ async fn start_transcribe(
             &ctx,
             &Source::Local(PathBuf::from(&path)),
             &AnalyzeOptions::default(),
-            &Deps::new(avr_core::jobs::shared_job_manager()),
+            &deps,
         )
         .await;
         match result {
@@ -240,15 +231,10 @@ async fn start_analyze(
     state: State<'_, SharedState>,
 ) -> Result<String, String> {
     let ctx = state.pipeline_ctx();
+    let deps = state.deps().clone();
     let app_handle = app.clone();
     tokio::spawn(async move {
-        let result = analyze(
-            &ctx,
-            &Source::Url(url),
-            &AnalyzeOptions::default(),
-            &Deps::new(avr_core::jobs::shared_job_manager()),
-        )
-        .await;
+        let result = analyze(&ctx, &Source::Url(url), &AnalyzeOptions::default(), &deps).await;
         match result {
             Ok(r) => {
                 let json = compact_mcp_payload(&r, 3000);

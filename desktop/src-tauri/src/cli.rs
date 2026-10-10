@@ -2,7 +2,9 @@
 
 use avr_core::config::load_config;
 use avr_core::error::AvrError;
-use avr_core::pipeline::{compact_mcp_payload, PipelineContext};
+use avr_core::pipeline::compact_mcp_payload;
+
+use crate::state::AppState;
 use avr_core::root::resolve_data_root;
 use avr_core::tools::registry::ToolRegistry;
 
@@ -20,10 +22,8 @@ pub fn run_transcribe(path: &str) -> i32 {
 }
 
 fn run_transcribe_inner(path: &str) -> Result<String, AvrError> {
-    let exe = std::env::current_exe().ok();
-    let exe_dir = exe.as_ref().and_then(|p| p.parent());
-    let root = resolve_data_root(exe_dir)?;
-    let ctx = PipelineContext::load(root)?;
+    let state = AppState::load()?;
+    let ctx = state.pipeline_ctx();
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -32,7 +32,7 @@ fn run_transcribe_inner(path: &str) -> Result<String, AvrError> {
             &ctx,
             &avr_core::pipeline::Source::Local(path.into()),
             &avr_core::pipeline::AnalyzeOptions::default(),
-            &avr_core::pipeline::Deps::new(avr_core::jobs::shared_job_manager()),
+            state.deps(),
         ))?;
     Ok(serde_json::to_string_pretty(&compact_mcp_payload(&result, 3000)).unwrap())
 }
@@ -55,10 +55,8 @@ pub fn run_analyze(url: &str) -> i32 {
 }
 
 fn run_analyze_inner(url: &str) -> Result<String, AvrError> {
-    let exe = std::env::current_exe().ok();
-    let exe_dir = exe.as_ref().and_then(|p| p.parent());
-    let root = resolve_data_root(exe_dir)?;
-    let ctx = PipelineContext::load(root)?;
+    let state = AppState::load()?;
+    let ctx = state.pipeline_ctx();
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -67,7 +65,7 @@ fn run_analyze_inner(url: &str) -> Result<String, AvrError> {
             &ctx,
             &avr_core::pipeline::Source::Url(url.to_string()),
             &avr_core::pipeline::AnalyzeOptions::default(),
-            &avr_core::pipeline::Deps::new(avr_core::jobs::shared_job_manager()),
+            state.deps(),
         ))?;
     Ok(serde_json::to_string_pretty(&compact_mcp_payload(&result, 3000)).unwrap())
 }

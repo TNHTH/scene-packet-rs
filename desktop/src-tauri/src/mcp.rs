@@ -1,10 +1,10 @@
 //! MCP stdio 服务。
 
+use crate::state::AppState;
 use avr_core::error::AvrError;
 use avr_core::pipeline::{
-    analyze, compact_mcp_payload, full_mcp_payload, AnalyzeOptions, Deps, PipelineContext, Source,
+    analyze, compact_mcp_payload, full_mcp_payload, AnalyzeOptions, PipelineContext, Source,
 };
-use avr_core::root::resolve_data_root;
 use rmcp::transport::stdio;
 use rmcp::{
     handler::server::router::tool::ToolRouter,
@@ -21,6 +21,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 struct AvrMcpServer {
     ctx: Arc<PipelineContext>,
+    state: Arc<AppState>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -60,9 +61,10 @@ fn default_delivery() -> String {
 
 #[tool_router]
 impl AvrMcpServer {
-    fn new(ctx: PipelineContext) -> Self {
+    fn new(state: AppState) -> Self {
         Self {
-            ctx: Arc::new(ctx),
+            ctx: Arc::new(state.pipeline_ctx()),
+            state: Arc::new(state),
             tool_router: Self::tool_router(),
         }
     }
@@ -154,12 +156,11 @@ impl AvrMcpServer {
     }
 
     async fn analyze_impl(&self, p: AnalyzeMediaParams) -> Result<CallToolResult, rmcp::ErrorData> {
-        let deps = Deps::new(avr_core::jobs::shared_job_manager());
         let result = analyze(
             &self.ctx,
             &Source::parse(&p.source),
             &AnalyzeOptions::default(),
-            &deps,
+            self.state.deps(),
         )
         .await;
 
@@ -203,11 +204,7 @@ impl ServerHandler for AvrMcpServer {
 }
 
 pub fn run_mcp() -> Result<(), AvrError> {
-    let exe = std::env::current_exe().ok();
-    let exe_dir = exe.as_ref().and_then(|p| p.parent());
-    let root = resolve_data_root(exe_dir)?;
-    let ctx = PipelineContext::load(root)?;
-    let server = AvrMcpServer::new(ctx);
+    let server = AvrMcpServer::new(AppState::load()?);
 
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

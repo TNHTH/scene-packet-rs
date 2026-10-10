@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 use fs4::fs_std::FileExt;
 use parking_lot::Mutex;
@@ -192,15 +191,11 @@ fn io_err_msg(msg: &str) -> AvrError {
     AvrError::new(ErrorCode::IoError, msg.to_string(), "检查磁盘权限。")
 }
 
-pub fn shared_job_manager() -> Arc<JobManager> {
-    static MGR: std::sync::OnceLock<Arc<JobManager>> = std::sync::OnceLock::new();
-    MGR.get_or_init(|| Arc::new(JobManager::new())).clone()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
 
@@ -298,5 +293,34 @@ mod tests {
         let w = mgr.run_once("k", &dir, || async { Ok(()) }).await;
         assert!(leader.await.unwrap().is_err());
         assert!(matches!(w, Err(ref e) if e.code == ErrorCode::ProcessFailed));
+    }
+
+    /// P1-2：两个独立注入的 JobManager 互不干扰（同 key 各自执行、事件互不串台）。
+    #[tokio::test]
+    async fn independent_managers_do_not_interfere() {
+        let (a_dir, b_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let (a, b) = (Arc::new(JobManager::new()), Arc::new(JobManager::new()));
+        let mut a_rx = a.subscribe();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let spawn = |mgr: Arc<JobManager>, dir: std::path::PathBuf| {
+            let runs = runs.clone();
+            tokio::spawn(async move {
+                mgr.run_once("same-key", &dir, move || async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Ok(())
+                })
+                .await
+            })
+        };
+        let ha = spawn(a.clone(), a_dir.path().to_path_buf());
+        let hb = spawn(b.clone(), b_dir.path().to_path_buf());
+        assert!(ha.await.unwrap().is_ok());
+        assert!(hb.await.unwrap().is_ok());
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "每个实例各自执行一次");
+        b.emit(JobProgress::Done {
+            media_key: "b".into(),
+        });
+        assert!(a_rx.try_recv().is_err(), "a 收不到 b 的进度事件");
     }
 }

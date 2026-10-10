@@ -12,7 +12,7 @@ use crate::error::{no_transcript_asr_not_configured, unsupported_url, AvrError};
 use crate::extract::platform::detect_platform;
 use crate::extract::ytdlp::YtDlpExtractor;
 use crate::ffmpeg::{extract_audio_wav, probe_duration, FfmpegContext};
-use crate::jobs::{shared_job_manager, JobManager, JobManifest, JobProgress};
+use crate::jobs::{JobManager, JobManifest, JobProgress};
 use crate::media::{media_key, MediaSource};
 use crate::models::{
     format_inline_text, truncate_utf8, AnalyzeResult, CacheMetadata, Transcript,
@@ -103,7 +103,7 @@ pub async fn analyze(
 
 #[deprecated(note = "使用 analyze(ctx, &Source::Url(..), opts, deps)")]
 pub async fn analyze_url(ctx: &PipelineContext, url: &str) -> Result<AnalyzeResult, AvrError> {
-    analyze_url_with(ctx, url, &Deps::new(shared_job_manager())).await
+    analyze_url_with(ctx, url, &Deps::new(Arc::new(JobManager::new()))).await
 }
 
 #[deprecated(note = "使用 analyze(ctx, &Source::Local(..), opts, deps)")]
@@ -111,7 +111,7 @@ pub async fn transcribe_local(
     ctx: &PipelineContext,
     path: &Path,
 ) -> Result<AnalyzeResult, AvrError> {
-    transcribe_local_with(ctx, path, &Deps::new(shared_job_manager())).await
+    transcribe_local_with(ctx, path, &Deps::new(Arc::new(JobManager::new()))).await
 }
 
 async fn analyze_url_with(
