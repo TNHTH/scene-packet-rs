@@ -194,11 +194,13 @@ async fn run_url_pipeline(
         .filter(|t| !t.segments.is_empty());
 
     let result = transcribe_and_save(
-        ctx,
-        deps,
-        item_cache,
-        key,
-        &fp,
+        &StageCtx {
+            ctx,
+            deps,
+            item_cache,
+            key,
+            fp: &fp,
+        },
         &video,
         subtitles,
         |part| async move { tools.download_audio(ctx, url, &part).await },
@@ -275,11 +277,13 @@ async fn run_local_pipeline(
     };
 
     transcribe_and_save(
-        ctx,
-        deps,
-        item_cache,
-        key,
-        &fp,
+        &StageCtx {
+            ctx,
+            deps,
+            item_cache,
+            key,
+            fp: &fp,
+        },
         &video,
         None,
         |part| async move { tools.extract_audio(ctx, path, &part).await },
@@ -289,13 +293,17 @@ async fn run_local_pipeline(
 
 /// URL 与本地共用的收尾阶段：
 /// 没有可用字幕时检查 ASR → 获取音频（复用媒体缓存）→ 转写；然后写转写缓存与作业清单。
-#[allow(clippy::too_many_arguments)]
+/// 收尾阶段的公共上下文。
+struct StageCtx<'a> {
+    ctx: &'a PipelineContext,
+    deps: &'a Deps,
+    item_cache: &'a Path,
+    key: &'a str,
+    fp: &'a AsrFingerprint,
+}
+
 async fn transcribe_and_save<F, Fut>(
-    ctx: &PipelineContext,
-    deps: &Deps,
-    item_cache: &Path,
-    key: &str,
-    fp: &AsrFingerprint,
+    stage: &StageCtx<'_>,
     video: &crate::models::VideoInfo,
     subtitles: Option<Transcript>,
     fetch_audio: F,
@@ -304,6 +312,13 @@ where
     F: FnOnce(PathBuf) -> Fut,
     Fut: std::future::Future<Output = Result<(), AvrError>>,
 {
+    let StageCtx {
+        ctx,
+        deps,
+        item_cache,
+        key,
+        fp,
+    } = *stage;
     let (transcript, asr_provider, asr_model, asr_version) = match subtitles {
         Some(t) => (t, "subtitle".to_string(), String::new(), String::new()),
         None => {
@@ -373,6 +388,30 @@ where
     fetch(part.clone()).await?;
     std::fs::rename(&part, &audio).map_err(|e| AvrError::io(e, "检查缓存目录权限。"))?;
     Ok(audio)
+}
+
+/// 按 media_key 读取已缓存的分析结果（只读，供 MCP 按需读取工具使用）。
+/// media_key 只允许字母数字与 `-_.`，防止路径穿越；无缓存返回 `Ok(None)`。
+pub fn load_result(
+    ctx: &PipelineContext,
+    media_key: &str,
+) -> Result<Option<AnalyzeResult>, AvrError> {
+    let valid = !media_key.is_empty()
+        && media_key != "."
+        && media_key != ".."
+        && media_key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if !valid {
+        return Err(AvrError::new(
+            crate::error::ErrorCode::CacheError,
+            "media_key 非法",
+            "使用 analyze 返回的 media_key。",
+        ));
+    }
+    let item_cache = effective_cache_dir(&ctx.root, &ctx.config).join(media_key);
+    Ok(load_cached_transcript(&item_cache, None)?
+        .map(|(video, trans, _)| make_analyze_result(&video, &trans, &item_cache, media_key)))
 }
 
 fn build_result_from_cache(item_cache: &Path, key: &str) -> Result<AnalyzeResult, AvrError> {
@@ -617,6 +656,20 @@ mod tests {
             platform: Platform::Bilibili,
             webpage_url: "u".into(),
         };
+        fn stage<'a>(
+            ctx: &'a PipelineContext,
+            deps: &'a Deps,
+            fp: &'a AsrFingerprint,
+            dir: &'a Path,
+        ) -> StageCtx<'a> {
+            StageCtx {
+                ctx,
+                deps,
+                item_cache: dir,
+                key: "k",
+                fp,
+            }
+        }
         let fetches = AtomicUsize::new(0);
         let fetch = |part: PathBuf| {
             fetches.fetch_add(1, Ordering::SeqCst);
@@ -625,7 +678,7 @@ mod tests {
 
         // ASR 路径：获取音频 + 转写 + 写缓存（含指纹）。
         let dir = tmp.path().join("asr");
-        let r = transcribe_and_save(&ctx, &deps, &dir, "k", &fp, &video, None, fetch)
+        let r = transcribe_and_save(&stage(&ctx, &deps, &fp, &dir), &video, None, fetch)
             .await
             .unwrap();
         assert_eq!(r.transcript.unwrap().source, TranscriptSource::Asr);
@@ -637,7 +690,7 @@ mod tests {
         );
 
         // 再跑一次：音频已存在，不再获取。
-        transcribe_and_save(&ctx, &deps, &dir, "k", &fp, &video, None, fetch)
+        transcribe_and_save(&stage(&ctx, &deps, &fp, &dir), &video, None, fetch)
             .await
             .unwrap();
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
@@ -650,7 +703,7 @@ mod tests {
             source: TranscriptSource::Subtitle,
             segments: vec![],
         };
-        transcribe_and_save(&ctx, &deps, &dir, "k", &fp, &video, Some(sub), fetch)
+        transcribe_and_save(&stage(&ctx, &deps, &fp, &dir), &video, Some(sub), fetch)
             .await
             .unwrap();
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
@@ -709,5 +762,26 @@ mod tests {
         std::fs::write(&copy, b"model weights v2").unwrap();
         analyze(&ctx, &src, &opts, &deps).await.unwrap();
         assert_eq!(calls(), 2, "换模型内容必须重新转写");
+    }
+
+    #[tokio::test]
+    async fn load_result_reads_cache_and_rejects_traversal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = test_ctx(&tmp);
+        let media = tmp.path().join("clip.mp4");
+        std::fs::write(&media, b"fake").unwrap();
+        let r = analyze(
+            &ctx,
+            &Source::Local(media),
+            &AnalyzeOptions::new(),
+            &Deps::for_test(),
+        )
+        .await
+        .unwrap();
+        let loaded = load_result(&ctx, &r.media_key).unwrap().unwrap();
+        assert_eq!(loaded.transcript, r.transcript);
+        assert!(load_result(&ctx, "missing-key").unwrap().is_none());
+        assert!(load_result(&ctx, "../etc").is_err());
+        assert!(load_result(&ctx, "..").is_err());
     }
 }

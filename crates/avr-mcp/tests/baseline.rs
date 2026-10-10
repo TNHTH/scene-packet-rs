@@ -209,6 +209,97 @@ async fn output_quality_baseline() {
     );
 }
 
+/// P3-2 往返：摘要索引 + 分页取回的转写 + 按编号取回的帧，拼起来与 full payload 逐项一致。
+#[tokio::test]
+async fn summary_index_roundtrip_reconstructs_full_payload() {
+    use avr_core::models::format_inline_text;
+    use avr_mcp::index::{frame_ref, read_transcript, summary_index};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let media = tmp.path().join("clip.mp4");
+    std::fs::write(&media, b"fake").unwrap();
+    let result = run_pipeline(tmp.path(), &media).await;
+    let full = avr_mcp::payload::full_mcp_payload(&result);
+    let index = summary_index(&result);
+
+    // 1. 分页取回全部分段（小页，强制多次翻页）。
+    let mut segments = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = read_transcript(&result, 0.0, f64::MAX, cursor.as_deref(), 200).unwrap();
+        pages += 1;
+        segments.extend(page.segments);
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    assert!(pages > 1, "应发生分页");
+    assert_eq!(
+        segments.len(),
+        index["segment_count"].as_u64().unwrap() as usize
+    );
+    assert!(segments.windows(2).all(|w| w[1].index == w[0].index + 1));
+
+    // 2. 按编号取回每个帧：编号与索引一致，时间落在对应 section 内。
+    let sections = index["sections"].as_array().unwrap();
+    for (n, sec) in sections.iter().enumerate() {
+        let f = frame_ref(&result, n).unwrap();
+        assert_eq!(serde_json::to_value(&f).unwrap(), index["frames"][n]);
+        let (s, e) = (sec["start"].as_f64().unwrap(), sec["end"].as_f64().unwrap());
+        assert!(s <= f.time && f.time <= e);
+    }
+    assert!(frame_ref(&result, sections.len()).is_err());
+
+    // 3. 拼回 full payload，逐项比较。
+    let transcript = avr_core::models::Transcript {
+        language: index["language"].as_str().unwrap().into(),
+        source: serde_json::from_value(index["source"].clone()).unwrap(),
+        segments: segments
+            .iter()
+            .map(|s| avr_core::models::TranscriptSegment {
+                start: s.start,
+                end: s.end,
+                text: s.text.clone(),
+            })
+            .collect(),
+    };
+    let mut rebuilt = serde_json::Map::new();
+    for key in [
+        "title",
+        "platform",
+        "duration",
+        "video_id",
+        "source",
+        "language",
+        "truncated",
+        "transcript_path",
+        "transcript_uri",
+        "text_file",
+        "cache_dir",
+        "media_key",
+    ] {
+        rebuilt.insert(key.into(), index[key].clone());
+    }
+    rebuilt.insert(
+        "segments".into(),
+        serde_json::to_value(&transcript.segments).unwrap(),
+    );
+    rebuilt.insert(
+        "text".into(),
+        json!(format_inline_text(
+            &transcript,
+            index["truncated"].as_bool().unwrap()
+        )),
+    );
+    let full = full.as_object().unwrap();
+    assert_eq!(rebuilt.len(), full.len(), "字段集合一致");
+    for (k, v) in full {
+        assert_eq!(rebuilt.get(k), Some(v), "字段 {k} 不一致");
+    }
+}
+
 /// token 统计（o200k_base 参考值）。`--ignored` 时才跑，不需要 ffmpeg。
 #[test]
 #[ignore = "token 统计：cargo test -p avr-mcp --test baseline -- --ignored --nocapture"]
@@ -220,6 +311,7 @@ fn token_stats() {
     let result = rt.block_on(run_pipeline(tmp.path(), &media));
     let bpe = tiktoken_rs::o200k_base().unwrap();
     for (name, v) in [
+        ("index", avr_mcp::index::summary_index(&result)),
         ("compact", compact_mcp_payload(&result, 3000)),
         ("full", avr_mcp::payload::full_mcp_payload(&result)),
     ] {

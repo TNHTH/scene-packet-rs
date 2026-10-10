@@ -2,19 +2,26 @@
 
 use crate::state::AppState;
 use avr_core::error::AvrError;
-use avr_core::pipeline::{analyze, AnalyzeOptions, PipelineContext, Source};
+use avr_core::frames::{CapturedFrame, FrameDelivery};
+use avr_core::pipeline::{analyze, load_result, AnalyzeOptions, PipelineContext, Source};
+use avr_mcp::index::{frame_ref, parse_frame_uri, read_transcript, summary_index, FrameRef};
 pub use avr_mcp::payload::{compact_mcp_payload, full_mcp_payload};
 use rmcp::transport::stdio;
 use rmcp::{
     handler::server::router::tool::ToolRouter,
     handler::server::tool::Parameters,
     model::{
-        CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
+        AnnotateAble, CallToolResult, Content, Implementation, ListResourceTemplatesResult,
+        PaginatedRequestParam, ProtocolVersion, RawResourceTemplate, ReadResourceRequestParam,
+        ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
     },
-    schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt,
 };
 use serde::Deserialize;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -27,14 +34,43 @@ struct AvrMcpServer {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct AnalyzeMediaParams {
     source: String,
-    #[serde(default = "default_compact")]
+    /// index（默认，摘要索引）| compact | full
+    #[serde(default = "default_index")]
     response_mode: String,
     #[serde(default = "default_max_inline")]
     max_inline_chars: usize,
 }
 
-fn default_compact() -> String {
-    "compact".into()
+fn default_index() -> String {
+    "index".into()
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ReadTranscriptParams {
+    media_key: String,
+    /// 起始秒（含），默认 0
+    start: Option<f64>,
+    /// 结束秒（不含），默认到结尾
+    end: Option<f64>,
+    /// 上一页返回的 nextCursor
+    cursor: Option<String>,
+    /// 单页最多字符数，默认 4000
+    max_chars: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct GetFrameParams {
+    media_key: String,
+    /// 帧编号（analyze 结果 frames[].n）
+    n: usize,
+    width: Option<u32>,
+}
+
+fn error_json(code: &str, message: impl std::fmt::Display, hint: &str) -> CallToolResult {
+    CallToolResult::success(vec![Content::text(
+        serde_json::json!({ "error": true, "code": code, "message": message.to_string(), "hint": hint })
+            .to_string(),
+    )])
 }
 fn default_max_inline() -> usize {
     3000
@@ -68,7 +104,9 @@ impl AvrMcpServer {
         }
     }
 
-    #[tool(description = "从 B站/抖音 URL 或本地文件提取字幕或语音转写文本")]
+    #[tool(
+        description = "从 B站/抖音 URL 或本地文件提取转写。默认返回摘要索引（分段时间范围、一句话概要、帧编号），正文用 read_transcript 按需读取"
+    )]
     async fn analyze_media(
         &self,
         Parameters(p): Parameters<AnalyzeMediaParams>,
@@ -154,6 +192,111 @@ impl AvrMcpServer {
         )]))
     }
 
+    #[tool(
+        description = "按时间范围读取转写原文（只读）。返回 segments 与 nextCursor；有 nextCursor 时带上它再调用取下一页"
+    )]
+    async fn read_transcript(
+        &self,
+        Parameters(p): Parameters<ReadTranscriptParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let result = match load_result(&self.ctx, &p.media_key) {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return Ok(error_json(
+                    "CACHE_ERROR",
+                    "未找到缓存",
+                    "先调用 analyze_media。",
+                ))
+            }
+            Err(e) => return Ok(error_json(e.code.as_str(), e.message, &e.hint)),
+        };
+        match read_transcript(
+            &result,
+            p.start.unwrap_or(0.0),
+            p.end.unwrap_or(f64::MAX),
+            p.cursor.as_deref(),
+            p.max_chars
+                .unwrap_or(avr_mcp::index::DEFAULT_PAGE_CHARS)
+                .max(1),
+        ) {
+            Ok(page) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&page).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(error_json(
+                "INVALID_ARGUMENT",
+                e,
+                "检查 cursor / 时间范围。",
+            )),
+        }
+    }
+
+    #[tool(
+        description = "按编号取关键帧（只读）。返回帧信息与 JPEG 图片；也可直接读取 resource avr://job/{media_key}/frame/{n}"
+    )]
+    async fn get_frame(
+        &self,
+        Parameters(p): Parameters<GetFrameParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.capture_frame(&p.media_key, p.n, p.width).await {
+            Ok((fref, frame)) => {
+                let info = serde_json::json!({
+                    "n": fref.n,
+                    "time": fref.time,
+                    "resource_uri": fref.resource_uri,
+                    "path": frame.path,
+                    "file_uri": frame.file_uri,
+                });
+                let mut content = vec![Content::text(info.to_string())];
+                if let Some(b64) = frame.base64 {
+                    content.push(Content::image(b64, "image/jpeg"));
+                }
+                Ok(CallToolResult::success(content))
+            }
+            Err(msg) => Ok(error_json(
+                "FRAME_UNAVAILABLE",
+                msg,
+                "确认 media_key 与帧编号。",
+            )),
+        }
+    }
+
+    /// 截取第 n 帧（缓存的视频源或本地原文件）。
+    async fn capture_frame(
+        &self,
+        media_key: &str,
+        n: usize,
+        width: Option<u32>,
+    ) -> Result<(FrameRef, CapturedFrame), String> {
+        let result = load_result(&self.ctx, media_key)
+            .map_err(|e| e.format_user())?
+            .ok_or_else(|| "未找到缓存，先调用 analyze_media".to_string())?;
+        let fref = frame_ref(&result, n).map_err(|e| e.to_string())?;
+        let cache = PathBuf::from(&result.cache_dir);
+        let source = ["source.mp4", "visual_proxy.mp4", "clip.mp4"]
+            .iter()
+            .map(|f| cache.join(f))
+            .chain(std::iter::once(PathBuf::from(&result.video.url)))
+            .find(|p| p.is_file())
+            .ok_or_else(|| "没有可用的视频画面源".to_string())?;
+        let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
+            .map_err(|e| e.format_user())?;
+        let frames = avr_core::frames::extract_frames(
+            &ffmpeg,
+            &source,
+            &[fref.time],
+            &cache.join("frames"),
+            width.unwrap_or(1280),
+            FrameDelivery::Both,
+        )
+        .await
+        .map_err(|e| e.format_user())?;
+        let frame = frames
+            .into_iter()
+            .next()
+            .ok_or_else(|| "截帧失败".to_string())?;
+        Ok((fref, frame))
+    }
+
     async fn analyze_impl(&self, p: AnalyzeMediaParams) -> Result<CallToolResult, rmcp::ErrorData> {
         let result = analyze(
             &self.ctx,
@@ -165,10 +308,10 @@ impl AvrMcpServer {
 
         match result {
             Ok(r) => {
-                let json = if p.response_mode == "full" {
-                    full_mcp_payload(&r)
-                } else {
-                    compact_mcp_payload(&r, p.max_inline_chars)
+                let json = match p.response_mode.as_str() {
+                    "full" => full_mcp_payload(&r),
+                    "compact" => compact_mcp_payload(&r, p.max_inline_chars),
+                    _ => summary_index(&r),
                 };
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string(&json).unwrap_or_default(),
@@ -192,13 +335,58 @@ impl ServerHandler for AvrMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
             server_info: Implementation {
                 name: "scene-packet".into(),
                 version: avr_core::VERSION.into(),
             },
-            instructions: Some("视频文本提取工具。只返回 transcript，不做总结。".into()),
+            instructions: Some(
+                "视频文本提取工具。analyze_media 默认只返回摘要索引；用 read_transcript 按时间范围取原文，用 get_frame 或 resource 取关键帧。不做总结。".into(),
+            ),
         }
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
+        Ok(ListResourceTemplatesResult {
+            next_cursor: None,
+            resource_templates: vec![RawResourceTemplate {
+                uri_template: "avr://job/{media_key}/frame/{n}".into(),
+                name: "关键帧".into(),
+                description: Some("analyze_media 结果 frames[] 中的关键帧（JPEG）".into()),
+                mime_type: Some("image/jpeg".into()),
+            }
+            .no_annotation()],
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParam,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+        let (key, n) = parse_frame_uri(&request.uri)
+            .map_err(|e| rmcp::ErrorData::invalid_params(e.to_string(), None))?;
+        let (_, frame) = self
+            .capture_frame(&key, n, None)
+            .await
+            .map_err(|e| rmcp::ErrorData::resource_not_found(e, None))?;
+        let blob = frame
+            .base64
+            .ok_or_else(|| rmcp::ErrorData::internal_error("截帧无数据", None))?;
+        Ok(ReadResourceResult {
+            contents: vec![ResourceContents::BlobResourceContents {
+                uri: request.uri,
+                mime_type: Some("image/jpeg".into()),
+                blob,
+            }],
+        })
     }
 }
 

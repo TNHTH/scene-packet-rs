@@ -3,4 +3,5 @@
 //! 独立成 crate 是为了让它不依赖 rmcp / Tauri / GTK，在 Linux CI 上也能测试，
 //! 同时保持 avr-core 不关心输出格式（P1-5 的约束）。
 
+pub mod index;
 pub mod payload;

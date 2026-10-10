@@ -340,6 +340,7 @@ name = "avr-mcp"
 version = "2.0.0"
 dependencies = [
  "avr-core",
+ "base64 0.22.1",
  "insta",
  "serde",
  "serde_json",

@@ -28,3 +28,16 @@ token 数用 tiktoken `o200k_base` 统计，仅作参考：
 | full（`response_mode=full`） | 11480 | 3478 |
 
 字节数随临时目录路径长度有几个字节的浮动。
+
+## P3-2 后：analyze_media 默认返回摘要索引
+
+| payload | 字节 | tokens (o200k_base) |
+|---|---|---|
+| index（`response_mode` 默认值，P3-2 起） | 1407 | 467 |
+| compact（P3-1 前的默认值，仍可显式指定 `response_mode=compact`） | 4134 | 1192 |
+| full | 11480 | 3478 |
+
+首次返回从 1192 降到 467 tokens（-61%）。正文用 `read_transcript`（时间范围 + 不透明 cursor 分页）取回，关键帧用 `get_frame` 或 resource `avr://job/{media_key}/frame/{n}` 取回。
+往返测试 `summary_index_roundtrip_reconstructs_full_payload` 证明：索引 + 分页转写 + 帧编号拼起来与 full payload 逐项一致。
+
+rmcp 0.3.2 不支持 `outputSchema` / `structuredContent` / `resource_link`，因此结构化结果以 JSON 文本放在 `content`，帧的 resource URI 写在 JSON 字段 `resource_uri` 中；resource 本身通过 `resources/templates/list` 与 `resources/read` 暴露。
