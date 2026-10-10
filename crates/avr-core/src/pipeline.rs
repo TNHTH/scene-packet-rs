@@ -193,47 +193,22 @@ async fn run_url_pipeline(
         .await?
         .filter(|t| !t.segments.is_empty());
 
-    let (transcript, asr_provider, asr_model, asr_version) = match subtitles {
-        Some(t) => (t, "subtitle".to_string(), String::new(), String::new()),
-        None => {
-            let platform = Some(video.platform.as_str());
-            let preset = tools
-                .asr_preset(ctx, platform)
-                .ok_or_else(no_transcript_asr_not_configured)?;
-            stage("asr", 60);
-            let audio_path = ensure_audio(item_cache, |part| async move {
-                tools.download_audio(ctx, url, &part).await
-            })
-            .await?;
-            let t = tools.transcribe(ctx, &audio_path, platform).await?;
-            (t, preset, fp.model, fp.version)
-        }
-    };
-
-    let metadata = CacheMetadata {
-        cache_schema: CACHE_SCHEMA,
-        app_version: VERSION.to_string(),
-        asr_provider: Some(asr_provider),
-        asr_model,
-        asr_version,
-        video_id: video.id.clone(),
-        platform: video.platform.as_str().to_string(),
-        source: match transcript.source {
-            crate::models::TranscriptSource::Subtitle => "subtitle".into(),
-            crate::models::TranscriptSource::Asr => "asr".into(),
-        },
-        created_at: Utc::now().to_rfc3339(),
-    };
-
-    std::fs::create_dir_all(item_cache).ok();
-    save_cache(item_cache, &video, &transcript, &metadata)?;
-    write_job_manifest(item_cache, key, "done")?;
+    let result = transcribe_and_save(
+        ctx,
+        deps,
+        item_cache,
+        key,
+        &fp,
+        &video,
+        subtitles,
+        |part| async move { tools.download_audio(ctx, url, &part).await },
+    )
+    .await?;
 
     mgr.emit(JobProgress::Done {
         media_key: key.to_string(),
     });
-
-    Ok(make_analyze_result(&video, &transcript, item_cache, key))
+    Ok(result)
 }
 
 async fn transcribe_local_with(
@@ -287,15 +262,6 @@ async fn run_local_pipeline(
 
     let tools = &deps.tools;
     let duration = tools.probe_duration(ctx, path).await.unwrap_or(0.0);
-    let audio_path = ensure_audio(item_cache, |part| async move {
-        tools.extract_audio(ctx, path, &part).await
-    })
-    .await?;
-
-    let preset = tools
-        .asr_preset(ctx, None)
-        .ok_or_else(no_transcript_asr_not_configured)?;
-    let transcript = tools.transcribe(ctx, &audio_path, None).await?;
     let video = crate::models::VideoInfo {
         id: key.to_string(),
         title: path
@@ -308,21 +274,74 @@ async fn run_local_pipeline(
         webpage_url: path.display().to_string(),
     };
 
+    transcribe_and_save(
+        ctx,
+        deps,
+        item_cache,
+        key,
+        &fp,
+        &video,
+        None,
+        |part| async move { tools.extract_audio(ctx, path, &part).await },
+    )
+    .await
+}
+
+/// URL 与本地共用的收尾阶段：
+/// 没有可用字幕时检查 ASR → 获取音频（复用媒体缓存）→ 转写；然后写转写缓存与作业清单。
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_and_save<F, Fut>(
+    ctx: &PipelineContext,
+    deps: &Deps,
+    item_cache: &Path,
+    key: &str,
+    fp: &AsrFingerprint,
+    video: &crate::models::VideoInfo,
+    subtitles: Option<Transcript>,
+    fetch_audio: F,
+) -> Result<AnalyzeResult, AvrError>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<(), AvrError>>,
+{
+    let (transcript, asr_provider, asr_model, asr_version) = match subtitles {
+        Some(t) => (t, "subtitle".to_string(), String::new(), String::new()),
+        None => {
+            let tools = &deps.tools;
+            let platform =
+                (video.platform != crate::models::Platform::Local).then(|| video.platform.as_str());
+            let preset = tools
+                .asr_preset(ctx, platform)
+                .ok_or_else(no_transcript_asr_not_configured)?;
+            deps.jobs.emit(JobProgress::Stage {
+                media_key: key.to_string(),
+                stage: "asr".into(),
+                percent: 60,
+            });
+            let audio_path = ensure_audio(item_cache, fetch_audio).await?;
+            let t = tools.transcribe(ctx, &audio_path, platform).await?;
+            (t, preset, fp.model.clone(), fp.version.clone())
+        }
+    };
+
     let metadata = CacheMetadata {
         cache_schema: CACHE_SCHEMA,
         app_version: VERSION.to_string(),
-        asr_provider: Some(preset),
-        asr_model: fp.model,
-        asr_version: fp.version,
-        video_id: key.to_string(),
-        platform: crate::models::Platform::Local.as_str().into(),
-        source: "asr".into(),
+        asr_provider: Some(asr_provider),
+        asr_model,
+        asr_version,
+        video_id: video.id.clone(),
+        platform: video.platform.as_str().to_string(),
+        source: match transcript.source {
+            crate::models::TranscriptSource::Subtitle => "subtitle".into(),
+            crate::models::TranscriptSource::Asr => "asr".into(),
+        },
         created_at: Utc::now().to_rfc3339(),
     };
 
-    save_cache(item_cache, &video, &transcript, &metadata)?;
+    save_cache(item_cache, video, &transcript, &metadata)?;
     write_job_manifest(item_cache, key, "done")?;
-    Ok(make_analyze_result(&video, &transcript, item_cache, key))
+    Ok(make_analyze_result(video, &transcript, item_cache, key))
 }
 
 /// 当前 ASR 配置的指纹（模型路径 + whisper 版本）。
@@ -568,5 +587,71 @@ mod tests {
             .unwrap();
         assert_eq!(fake.transcribe_calls.load(Ordering::SeqCst), 2);
         assert!(load_cached_transcript(dir, None).unwrap().is_some());
+    }
+
+    /// P2-2：共用收尾阶段——无字幕走 ASR 并复用已有音频；有字幕不触发 ASR 与音频获取。
+    #[tokio::test]
+    async fn transcribe_and_save_stage() {
+        use crate::models::{Platform, TranscriptSource, VideoInfo};
+        use crate::tools::runtime::fake::FakeTools;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = test_ctx(&tmp);
+        let fake = Arc::new(FakeTools::default());
+        let deps = Deps::new(Arc::new(JobManager::new())).with_tools(fake.clone());
+        let fp = AsrFingerprint {
+            model: "m".into(),
+            version: "v".into(),
+        };
+        let video = VideoInfo {
+            id: "k".into(),
+            title: "t".into(),
+            url: "u".into(),
+            duration: 1.0,
+            platform: Platform::Bilibili,
+            webpage_url: "u".into(),
+        };
+        let fetches = AtomicUsize::new(0);
+        let fetch = |part: PathBuf| {
+            fetches.fetch_add(1, Ordering::SeqCst);
+            async move { std::fs::write(part, b"RIFF").map_err(|e| AvrError::io(e, "")) }
+        };
+
+        // ASR 路径：获取音频 + 转写 + 写缓存（含指纹）。
+        let dir = tmp.path().join("asr");
+        let r = transcribe_and_save(&ctx, &deps, &dir, "k", &fp, &video, None, fetch)
+            .await
+            .unwrap();
+        assert_eq!(r.transcript.unwrap().source, TranscriptSource::Asr);
+        assert!(dir.join("audio.wav").is_file() && !dir.join("audio-tmp.wav").exists());
+        let meta = load_cached_transcript(&dir, Some(&fp)).unwrap().unwrap().2;
+        assert_eq!(
+            (meta.asr_model.as_str(), meta.asr_version.as_str()),
+            ("m", "v")
+        );
+
+        // 再跑一次：音频已存在，不再获取。
+        transcribe_and_save(&ctx, &deps, &dir, "k", &fp, &video, None, fetch)
+            .await
+            .unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.transcribe_calls.load(Ordering::SeqCst), 2);
+
+        // 字幕路径：不转写、不取音频，元数据不带 ASR 指纹。
+        let dir = tmp.path().join("sub");
+        let sub = crate::models::Transcript {
+            language: "zh".into(),
+            source: TranscriptSource::Subtitle,
+            segments: vec![],
+        };
+        transcribe_and_save(&ctx, &deps, &dir, "k", &fp, &video, Some(sub), fetch)
+            .await
+            .unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.transcribe_calls.load(Ordering::SeqCst), 2);
+        let meta = load_cached_transcript(&dir, None).unwrap().unwrap().2;
+        assert_eq!(meta.source, "subtitle");
+        assert!(meta.asr_version.is_empty());
     }
 }
