@@ -9,13 +9,19 @@ env:
 
 jobs:
   core:
-    name: avr-core (fmt / clippy / test)
+    name: avr-core (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.88", stable]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
+      - run: rustup override set ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy -p avr-core --all-targets -- -D warnings
@@ -29,6 +35,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/ui/package-lock.json
+      - name: Build frontend (tauri frontendDist)
+        working-directory: desktop/ui
+        run: npm ci && npm run build
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
