@@ -62,6 +62,55 @@ pub async fn probe_duration(ctx: &FfmpegContext, input: &Path) -> Result<f64, Av
     Ok(dur)
 }
 
+#[derive(Debug, Clone)]
+pub struct MediaProbe {
+    pub duration: f64,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: f64,
+    pub has_audio: bool,
+}
+
+pub async fn probe_media(ctx: &FfmpegContext, input: &Path) -> Result<MediaProbe, AvrError> {
+    let req = ProcessRequest {
+        program: ctx.ffprobe.clone(),
+        args: vec![
+            "-v".into(),
+            "error".into(),
+            "-show_entries".into(),
+            "format=duration:stream=codec_type,width,height,avg_frame_rate,duration".into(),
+            "-of".into(),
+            "json".into(),
+            input.display().to_string(),
+        ],
+        cwd: None,
+        timeout: Some(Duration::from_secs(120)),
+        expected_outputs: vec![],
+    };
+    let out = run(&req).await?;
+    let data: serde_json::Value =
+        serde_json::from_str(&out.stdout).map_err(|e| process_failed(&e.to_string()))?;
+    let streams = data["streams"].as_array().cloned().unwrap_or_default();
+    let video = streams.iter().find(|s| s["codec_type"] == "video");
+    let frame_rate = video
+        .and_then(|s| s["avg_frame_rate"].as_str())
+        .and_then(|s| s.split_once('/'))
+        .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .unwrap_or(30.0);
+    Ok(MediaProbe {
+        duration: video
+            .and_then(|v| v["duration"].as_str())
+            .or_else(|| data["format"]["duration"].as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0),
+        frame_rate,
+        width: video.and_then(|s| s["width"].as_u64()).unwrap_or(0) as u32,
+        height: video.and_then(|s| s["height"].as_u64()).unwrap_or(0) as u32,
+        has_audio: streams.iter().any(|s| s["codec_type"] == "audio"),
+    })
+}
+
 /// 抽取 16kHz 单声道 wav。
 pub async fn extract_audio_wav(
     ctx: &FfmpegContext,

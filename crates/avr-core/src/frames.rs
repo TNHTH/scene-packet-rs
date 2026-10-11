@@ -190,6 +190,84 @@ pub async fn resolve_visual_source(
     ))
 }
 
+/// 自动候选限制在可解码的最后一帧；用户手动补帧保持原时间。
+pub fn clamp_automatic_times(times: &mut [f64], extra: &[f64], probe: &crate::ffmpeg::MediaProbe) {
+    let last = (probe.duration - 1.0 / probe.frame_rate).max(0.0);
+    for time in times {
+        if *time > last && !extra.iter().any(|t| (*t - *time).abs() < 0.001) {
+            *time = (last * 1000.0).floor() / 1000.0;
+        }
+    }
+}
+
+/// 统一到毫秒，去掉重复，并拒绝落在时长之外的时间。
+pub fn validate_times(times: &[f64], duration: f64) -> Result<Vec<f64>, AvrError> {
+    if !duration.is_finite() || duration <= 0.0 {
+        return Err(crate::error::process_failed("视频时长无效"));
+    }
+    let mut millis = Vec::new();
+    for t in times {
+        if !t.is_finite() || *t < 0.0 || *t >= duration {
+            return Err(crate::error::process_failed(
+                "截图时间必须在 [0, 视频时长) 内",
+            ));
+        }
+        let ms = (t * 1000.0).round() as u64;
+        if ms as f64 / 1000.0 >= duration {
+            return Err(crate::error::process_failed("截图时间舍入后超过视频边界"));
+        }
+        millis.push(ms);
+    }
+    millis.sort_unstable();
+    millis.dedup();
+    Ok(millis.into_iter().map(|t| t as f64 / 1000.0).collect())
+}
+
+/// 均匀覆盖先占预算，其余预算留给场景候选；明确指定的补帧不静默丢弃。
+pub fn sampling_times(
+    duration: f64,
+    interval: f64,
+    limit: usize,
+    extra: &[f64],
+    scenes: &[(f64, f32)],
+) -> Result<Vec<f64>, AvrError> {
+    if !duration.is_finite()
+        || duration <= 0.0
+        || !interval.is_finite()
+        || interval <= 0.0
+        || !(2..=10000).contains(&limit)
+    {
+        return Err(crate::error::process_failed(
+            "采样间隔必须大于零，预算须在2到10000之间",
+        ));
+    }
+    let extras = validate_times(extra, duration)?;
+    if extras.len() + 2 > limit {
+        return Err(crate::error::process_failed(
+            "指定补帧超过预算，请增加 max-frames",
+        ));
+    }
+    let remaining = limit - extras.len();
+    let desired = (duration / interval).ceil().min(10000.0) as usize + 1;
+    let count = desired.min(remaining).max(2);
+    let last = (duration - 0.05).max(0.0);
+    let mut times = extras;
+    for i in 0..count {
+        times.push((last * i as f64 / (count - 1) as f64 * 1000.0).floor() / 1000.0);
+    }
+    times = validate_times(&times, duration)?;
+    for (t, _) in scenes {
+        if times.len() >= limit {
+            break;
+        }
+        let t = (*t + 0.1).min(last);
+        if t >= 0.0 && t.is_finite() && times.iter().all(|x| (*x - t).abs() > 0.1) {
+            times.push(t);
+        }
+    }
+    validate_times(&times, duration)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,6 +13,7 @@ pub mod jobs;
 pub mod keyframes;
 pub mod media;
 pub mod models;
+pub mod packet;
 pub mod paths;
 pub mod pipeline;
 pub mod process;

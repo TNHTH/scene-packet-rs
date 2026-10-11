@@ -153,6 +153,11 @@ impl MediaKey {
     }
 }
 
+/// `media_key` 能否作为缓存目录名。拒绝空值、`.`、`..` 和路径分隔符。
+pub fn valid_media_key(value: &str) -> bool {
+    MediaKey::parse(value).is_ok()
+}
+
 /// 计算 media_key（缓存目录名）。
 pub fn media_key(source: &MediaSource, duration: Option<f64>) -> Result<String, AvrError> {
     match source {
