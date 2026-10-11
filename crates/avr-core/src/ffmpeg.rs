@@ -134,6 +134,47 @@ pub async fn capture_frame(
 }
 
 /// scene 检测，返回 (时间, 分数) 列表。
+/// 按长边与 JPEG 质量截一帧（P5-2）：长边缩到 `long_side`（不放大），`-q:v` 由 [`crate::keyframes::jpeg_qscale`] 换算。
+pub async fn capture_frame_spec(
+    ctx: &FfmpegContext,
+    input: &Path,
+    timestamp: f64,
+    output: &Path,
+    long_side: u32,
+    quality: u8,
+) -> Result<PathBuf, AvrError> {
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let req = ProcessRequest {
+        program: ctx.ffmpeg.clone(),
+        args: vec![
+            "-y".into(),
+            "-ss".into(),
+            format!("{timestamp:.3}"),
+            "-i".into(),
+            input.display().to_string(),
+            "-frames:v".into(),
+            "1".into(),
+            "-q:v".into(),
+            crate::keyframes::jpeg_qscale(quality).to_string(),
+            "-vf".into(),
+            long_side_scale(long_side),
+            output.display().to_string(),
+        ],
+        cwd: None,
+        timeout: Some(Duration::from_secs(120)),
+        expected_outputs: vec![output.to_path_buf()],
+    };
+    run(&req).await?;
+    Ok(output.to_path_buf())
+}
+
+/// 长边不超过 `l` 的 scale 滤镜（保持比例、偶数尺寸、不放大）。
+pub fn long_side_scale(l: u32) -> String {
+    format!("scale='if(gte(iw,ih),min({l},iw),-2)':'if(gte(iw,ih),-2,min({l},ih))'")
+}
+
 pub async fn detect_scenes(
     ctx: &FfmpegContext,
     input: &Path,

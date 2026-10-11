@@ -44,6 +44,14 @@ pub struct KeyframeConfig {
     /// 前一帧边缘被后一帧（3×3 邻域）覆盖的比例 ≥ 此值，视为“逐步出现”（PPT 动画 / 板书续写），
     /// 只保留后一帧。
     pub contain_ratio: f32,
+    /// 返回给 AI 的图片长边（像素）。
+    pub image_long_side: u32,
+    /// 返回给 AI 的 JPEG 质量（1–100）。
+    pub jpeg_quality: u8,
+    /// `get_frame` 单次最多返回的图片数。
+    pub max_frames_per_call: usize,
+    /// 转写稀少（< `sparse_units_per_min`）时 analyze 首次返回附带的板书图数量上限。
+    pub sparse_attach: usize,
 }
 
 impl Default for KeyframeConfig {
@@ -60,6 +68,10 @@ impl Default for KeyframeConfig {
             max_per_hour: 40.0,
             min_frames: 12,
             contain_ratio: 0.85,
+            image_long_side: 1280,
+            jpeg_quality: 85,
+            max_frames_per_call: 4,
+            sparse_attach: 4,
         }
     }
 }
@@ -345,6 +357,83 @@ pub fn select(
         .collect()
 }
 
+/// 选帧结果缓存（`<cache>/keyframes.json`），参数变化即重算。
+#[derive(Serialize, Deserialize)]
+struct Cached {
+    config: KeyframeConfig,
+    frames: Vec<Keyframe>,
+}
+
+pub const CACHE_FILE: &str = "keyframes.json";
+
+/// 读取缓存的板书帧；没有或参数不同则对 `video` 重新选帧并写缓存。
+pub async fn load_or_compute(
+    ctx: &FfmpegContext,
+    video: &Path,
+    cache_dir: &Path,
+    cfg: &KeyframeConfig,
+    transcript: Option<&crate::models::Transcript>,
+) -> Result<Vec<Keyframe>, AvrError> {
+    let path = cache_dir.join(CACHE_FILE);
+    if let Some(c) = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Cached>(&b).ok())
+    {
+        if c.config == *cfg {
+            return Ok(c.frames);
+        }
+    }
+    let samples = sample_video(ctx, video, cfg.interval_secs, cache_dir).await?;
+    let duration = crate::ffmpeg::probe_duration(ctx, video)
+        .await
+        .unwrap_or(samples.len() as f64 * cfg.interval_secs);
+    let scenes: Vec<f64> = crate::ffmpeg::detect_scenes(ctx, video, 0.3)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    let units = |a: f64, b: f64| speech_units_between(transcript, a, b);
+    let frames = select(&samples, duration, cfg, &scenes, &units);
+    let body = serde_json::to_vec(&Cached {
+        config: cfg.clone(),
+        frames: frames.clone(),
+    })
+    .map_err(|e| AvrError::io(std::io::Error::other(e), "写选帧缓存失败"))?;
+    crate::jobs::atomic_write(&path, &body)?;
+    Ok(frames)
+}
+
+/// `[a, b)` 内（与之相交的非疑似幻觉句）的字 / 词数。
+pub fn speech_units_between(t: Option<&crate::models::Transcript>, a: f64, b: f64) -> usize {
+    t.map(|t| {
+        t.segments
+            .iter()
+            .filter(|s| s.suspect.is_none() && s.start < b && s.end > a)
+            .map(|s| crate::asr::postprocess::speech_units(&s.text))
+            .sum()
+    })
+    .unwrap_or(0)
+}
+
+/// 转写是否稀少：全片每分钟字 / 词数低于 `cfg.sparse_units_per_min`。
+pub fn is_sparse(
+    t: Option<&crate::models::Transcript>,
+    duration: f64,
+    cfg: &KeyframeConfig,
+) -> bool {
+    if duration <= 0.0 {
+        return false;
+    }
+    (speech_units_between(t, 0.0, f64::MAX) as f64) / (duration / 60.0) < cfg.sparse_units_per_min
+}
+
+/// JPEG 质量（1–100）→ ffmpeg mjpeg 的 `-q:v`（2 最好、31 最差，线性近似）。
+pub fn jpeg_qscale(quality: u8) -> u32 {
+    let q = quality.clamp(1, 100) as u32;
+    2 + (100 - q) * 29 / 99
+}
+
 /// 用 ffmpeg 一次抽出全部采样帧（灰度 rawvideo 写临时文件）。
 pub async fn sample_video(
     ctx: &FfmpegContext,
@@ -575,5 +664,38 @@ mod tests {
         assert_eq!(k.len(), 1);
         assert!(k[0].time >= 20.0);
         assert_eq!((k[0].start, k[0].end), (0.0, 40.0));
+    }
+
+    #[test]
+    fn jpeg_quality_mapping() {
+        assert_eq!(jpeg_qscale(100), 2);
+        assert_eq!(jpeg_qscale(85), 6);
+        assert_eq!(jpeg_qscale(1), 31);
+        assert_eq!(jpeg_qscale(0), 31);
+    }
+
+    #[test]
+    fn sparse_detection_ignores_suspects() {
+        use crate::models::{SuspectReason, Transcript, TranscriptSegment, TranscriptSource};
+        let seg = |t: &str, suspect| TranscriptSegment {
+            start: 0.0,
+            end: 5.0,
+            text: t.into(),
+            suspect,
+        };
+        let cfg = KeyframeConfig::default();
+        let dense = Transcript {
+            language: "zh".into(),
+            source: TranscriptSource::Asr,
+            segments: vec![seg(&"字".repeat(100), None)],
+        };
+        assert!(!is_sparse(Some(&dense), 60.0, &cfg));
+        assert!(is_sparse(Some(&dense), 600.0, &cfg), "10 分钟 100 字");
+        let fake = Transcript {
+            segments: vec![seg(&"字".repeat(100), Some(SuspectReason::Repeat))],
+            ..dense.clone()
+        };
+        assert!(is_sparse(Some(&fake), 60.0, &cfg));
+        assert!(is_sparse(None, 60.0, &cfg));
     }
 }

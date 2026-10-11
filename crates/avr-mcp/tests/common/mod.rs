@@ -124,6 +124,24 @@ pub fn fake_deps() -> Deps {
     Deps::new(Arc::new(JobManager::new())).with_tools(fake)
 }
 
+/// 转写稀少：6 秒只有一句 2 个字。
+pub fn sparse_deps() -> Deps {
+    let fake = Arc::new(FakeTools {
+        transcript: Some(Transcript {
+            language: "zh".into(),
+            source: TranscriptSource::Asr,
+            segments: vec![TranscriptSegment {
+                start: 0.0,
+                end: 1.0,
+                text: "你好".into(),
+                suspect: None,
+            }],
+        }),
+        ..Default::default()
+    });
+    Deps::new(Arc::new(JobManager::new())).with_tools(fake)
+}
+
 pub async fn run_pipeline(dir: &Path, video: &Path) -> AnalyzeResult {
     let ctx = test_ctx(dir);
     let deps = fake_deps();

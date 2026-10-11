@@ -124,6 +124,92 @@ pub fn sections(result: &AnalyzeResult) -> Vec<Section> {
     out
 }
 
+/// 板书区间：选帧结果的一段（时间范围、帧编号、同时段转写）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoardInterval {
+    /// 板书帧编号（`get_frame(board=true, ns=[n])`）。
+    pub n: usize,
+    pub start: f64,
+    pub end: f64,
+    /// 选中帧的时间。
+    pub time: f64,
+    pub resource_uri: String,
+    /// 同时段转写（跳过疑似幻觉句），超过 [`BOARD_TEXT_CHARS`] 字截断。
+    pub transcript: String,
+}
+
+/// 板书区间附带转写的最大字符数。
+pub const BOARD_TEXT_CHARS: usize = 200;
+
+pub fn board_uri(media_key: &str, n: usize) -> String {
+    format!("avr://job/{media_key}/board/{n}")
+}
+
+/// 把选帧结果整理成索引里的“板书区间”段落。
+pub fn board_intervals(
+    result: &AnalyzeResult,
+    frames: &[avr_core::keyframes::Keyframe],
+) -> Vec<BoardInterval> {
+    let segs = segments(result);
+    frames
+        .iter()
+        .map(|k| {
+            let text: Vec<&str> = segs
+                .iter()
+                .filter(|s| s.suspect.is_none() && s.start < k.end && s.end > k.start)
+                .map(|s| s.text.trim())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let text = text.join(" ");
+            let mut transcript: String = text.chars().take(BOARD_TEXT_CHARS).collect();
+            if text.chars().count() > BOARD_TEXT_CHARS {
+                transcript.push('…');
+            }
+            BoardInterval {
+                n: k.n,
+                start: k.start,
+                end: k.end,
+                time: k.time,
+                resource_uri: board_uri(&result.media_key, k.n),
+                transcript,
+            }
+        })
+        .collect()
+}
+
+/// 最重要的至多 `k` 张板书帧编号（按有效内容分数降序，再按时间排序）。
+pub fn top_board_frames(frames: &[avr_core::keyframes::Keyframe], k: usize) -> Vec<usize> {
+    let mut v: Vec<&avr_core::keyframes::Keyframe> = frames.iter().collect();
+    v.sort_by(|a, b| b.content.total_cmp(&a.content).then(a.n.cmp(&b.n)));
+    let mut ns: Vec<usize> = v.into_iter().take(k).map(|f| f.n).collect();
+    ns.sort_unstable();
+    ns
+}
+
+/// 资源种类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameKind {
+    /// 按转写分段的关键帧（`frames[]`）。
+    Section,
+    /// 板书 / 幻灯片帧（`board[]`）。
+    Board,
+}
+
+/// 解析 `avr://job/{media_key}/frame/{n}` 或 `.../board/{n}`。
+pub fn parse_any_frame_uri(uri: &str) -> Result<(MediaKey, FrameKind, usize), IndexError> {
+    if let Ok((k, n)) = parse_frame_uri(uri) {
+        return Ok((k, FrameKind::Section, n));
+    }
+    let rest = uri.strip_prefix("avr://job/").ok_or(IndexError::BadUri)?;
+    let (key, n) = rest.rsplit_once("/board/").ok_or(IndexError::BadUri)?;
+    let key = MediaKey::parse(key).map_err(|_| IndexError::BadUri)?;
+    Ok((
+        key,
+        FrameKind::Board,
+        n.parse().map_err(|_| IndexError::BadUri)?,
+    ))
+}
+
 pub fn frame_uri(media_key: &str, n: usize) -> String {
     format!("avr://job/{media_key}/frame/{n}")
 }
@@ -297,5 +383,47 @@ mod tests {
         assert_eq!(c["sample_segments"].as_array().unwrap().len(), 1);
         let f = crate::payload::full_mcp_payload(&r);
         assert_eq!(f["segments"][1]["suspect"], "repeat");
+    }
+
+    #[test]
+    fn board_intervals_carry_overlapping_clean_text() {
+        use avr_core::keyframes::Keyframe;
+        use avr_core::models::SuspectReason;
+        let mut r = crate::payload::tests::sample("开头");
+        let t = r.transcript.as_mut().unwrap();
+        for (s, e, txt, sus) in [
+            (10.0, 12.0, "板书一", None),
+            (12.0, 13.0, "板书一", Some(SuspectReason::Repeat)),
+            (30.0, 31.0, &*"长".repeat(300), None),
+        ] {
+            t.segments.push(avr_core::models::TranscriptSegment {
+                start: s,
+                end: e,
+                text: txt.into(),
+                suspect: sus,
+            });
+        }
+        let kf = |n, start, end, content| Keyframe {
+            n,
+            time: end - 1.0,
+            start,
+            end,
+            content,
+            hash: 0,
+        };
+        let b = board_intervals(&r, &[kf(0, 0.0, 20.0, 0.1), kf(1, 20.0, 40.0, 0.3)]);
+        assert_eq!(b[0].transcript, "开头 板书一");
+        assert_eq!(b[0].resource_uri, "avr://job/k/board/0");
+        assert_eq!(b[1].transcript.chars().count(), BOARD_TEXT_CHARS + 1);
+        let (k, kind, n) = parse_any_frame_uri(&b[1].resource_uri).unwrap();
+        assert_eq!((k.as_str(), kind, n), ("k", FrameKind::Board, 1));
+        assert!(parse_any_frame_uri("avr://job/../board/1").is_err());
+        let frames = [
+            kf(0, 0.0, 1.0, 0.1),
+            kf(1, 1.0, 2.0, 0.5),
+            kf(2, 2.0, 3.0, 0.3),
+        ];
+        assert_eq!(top_board_frames(&frames, 2), vec![1, 2]);
+        assert_eq!(top_board_frames(&frames, 9), vec![0, 1, 2]);
     }
 }

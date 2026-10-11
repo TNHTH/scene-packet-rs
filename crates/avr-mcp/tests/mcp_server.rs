@@ -144,6 +144,55 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
             "应带 JPEG 图片"
         );
 
+        // P5-2：索引带板书区间；get_frame(board) 一次多张、超过 4 张报错。
+        let board = index["board"].as_array().expect("index 应带 board[]");
+        assert!(!board.is_empty(), "{index}");
+        let b0 = &board[0];
+        assert!(b0["end"].as_f64().unwrap() > b0["start"].as_f64().unwrap());
+        assert!(b0["transcript"].as_str().unwrap().contains("第1句"));
+        let nb = board.len().min(2);
+        let ns: Vec<usize> = (0..nb).collect();
+        let multi = call(
+            &client,
+            "get_frame",
+            json!({ "media_key": key, "board": true, "ns": ns, "width": 160 }),
+        )
+        .await;
+        let images = multi
+            .content
+            .iter()
+            .filter(|c| c.as_image().is_some())
+            .count();
+        assert_eq!(images, nb, "{}", json_of(&multi));
+        let too_many = json_of(
+            &call(
+                &client,
+                "get_frame",
+                json!({ "media_key": key, "board": true, "ns": [0, 1, 2, 3, 4] }),
+            )
+            .await,
+        );
+        assert!(is_error(&too_many), "{too_many}");
+        let bad = json_of(
+            &call(
+                &client,
+                "get_frame",
+                json!({ "media_key": key, "board": true, "n": 999 }),
+            )
+            .await,
+        );
+        assert!(is_error(&bad), "{bad}");
+        let res = client
+            .read_resource(ReadResourceRequestParam {
+                uri: b0["resource_uri"].as_str().unwrap().to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            &res.contents[0],
+            ResourceContents::BlobResourceContents { .. }
+        ));
+
         let uri = info["resource_uri"].as_str().unwrap().to_string();
         let res = client
             .read_resource(ReadResourceRequestParam { uri: uri.clone() })
@@ -203,7 +252,8 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
         .lines()
         .map(|l| serde_json::from_str(l).expect("每行是 JSON"))
         .collect();
-    let calls = 3 + pages + usize::from(ff.is_some()) + 7 * 4;
+    // 有 ffmpeg 时：get_frame 单张 1 次 + 板书多张 / 超限 / 越界 3 次。
+    let calls = 3 + pages + 4 * usize::from(ff.is_some()) + 7 * 4;
     assert_eq!(lines.len(), calls, "日志行数应等于工具调用次数");
     for l in &lines {
         for k in ["ts", "tool", "args", "bytes", "ok"] {
@@ -257,4 +307,46 @@ async fn call_log_file_off_by_default() {
         .join("logs")
         .join("mcp-calls.jsonl")
         .exists());
+}
+
+/// P5-2：转写稀少的视频，analyze 首次返回直接附最多 4 张板书图。
+#[tokio::test]
+async fn sparse_transcript_attaches_board_images() {
+    let Some(ff) = common::ffmpeg_or_skip() else {
+        return;
+    };
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut ctx = common::test_ctx(tmp.path());
+    ctx.config.tools.ffmpeg_path = ff.ffmpeg.display().to_string();
+    ctx.config.tools.ffprobe_path = ff.ffprobe.display().to_string();
+    let media = common::make_video(&ff, tmp.path());
+    let client = connect(AvrMcpServer::new(ctx, common::sparse_deps())).await;
+    let r = call(
+        &client,
+        "analyze_media",
+        json!({ "source": media.display().to_string() }),
+    )
+    .await;
+    let v = json_of(&r);
+    assert_eq!(v["response_mode"], "compact");
+    assert_eq!(v["sparse_transcript"], true, "{v}");
+    let n_img = r.content.iter().filter(|c| c.as_image().is_some()).count();
+    assert!((1..=4).contains(&n_img), "{n_img}");
+    assert_eq!(v["board_images"].as_array().unwrap().len(), n_img);
+
+    // 讲话密的视频不附图。
+    let tmp2 = tempfile::TempDir::new().unwrap();
+    let mut ctx2 = common::test_ctx(tmp2.path());
+    ctx2.config.tools.ffmpeg_path = ff.ffmpeg.display().to_string();
+    ctx2.config.tools.ffprobe_path = ff.ffprobe.display().to_string();
+    let media2 = common::make_video(&ff, tmp2.path());
+    let client2 = connect(AvrMcpServer::new(ctx2, common::fake_deps())).await;
+    let r2 = call(
+        &client2,
+        "analyze_media",
+        json!({ "source": media2.display().to_string() }),
+    )
+    .await;
+    assert!(r2.content.iter().all(|c| c.as_image().is_none()));
+    assert!(json_of(&r2).get("sparse_transcript").is_none());
 }

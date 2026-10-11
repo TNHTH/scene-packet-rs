@@ -2,10 +2,13 @@
 //! 这里不依赖 Tauri，可在 Linux 上做进程内集成测试。
 
 use crate::calllog::{self, CallLog};
-use crate::index::{frame_ref, parse_frame_uri, read_transcript, FrameRef};
+use crate::index::{
+    board_intervals, board_uri, frame_ref, parse_any_frame_uri, read_transcript, top_board_frames,
+    FrameKind,
+};
 use crate::mode::{render, ResponseMode};
 use avr_core::error::AvrError;
-use avr_core::frames::{CapturedFrame, FrameDelivery};
+use avr_core::frames::CapturedFrame;
 use avr_core::media::MediaKey;
 use avr_core::pipeline::{
     analyze, load_result, resolve_item_cache, AnalyzeOptions, Deps, PipelineContext, Source,
@@ -64,9 +67,65 @@ struct ReadTranscriptParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GetFrameParams {
     media_key: String,
-    /// 帧编号（analyze 结果 frames[].n）
-    n: usize,
+    /// 单个帧编号（analyze 结果 frames[].n，board=true 时为 board[].n）
+    n: Option<usize>,
+    /// 一次取多张（与 n 合并），单次最多 keyframes.max_frames_per_call（默认 4）张
+    ns: Option<Vec<usize>>,
+    /// true = 取板书 / 幻灯片帧（索引 board[]）；默认 false = 分段关键帧
+    #[serde(default)]
+    board: bool,
+    /// 图片长边像素，默认 keyframes.image_long_side（1280）
     width: Option<u32>,
+}
+
+/// 请求的帧编号列表：合并 n 与 ns、去重保序，并检查数量上限。
+fn requested_frames(
+    n: Option<usize>,
+    ns: Option<Vec<usize>>,
+    max: usize,
+) -> Result<Vec<usize>, String> {
+    let mut v: Vec<usize> = n.into_iter().chain(ns.unwrap_or_default()).collect();
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|x| seen.insert(*x));
+    if v.is_empty() {
+        return Err("需要 n 或 ns".into());
+    }
+    if v.len() > max {
+        return Err(format!("单次最多取 {max} 张，收到 {} 张", v.len()));
+    }
+    Ok(v)
+}
+
+/// 一张截好的帧及其元数据。
+struct Captured {
+    kind: FrameKind,
+    n: usize,
+    time: f64,
+    resource_uri: String,
+    frame: CapturedFrame,
+}
+
+impl Captured {
+    fn info(&self) -> serde_json::Value {
+        serde_json::json!({
+            "n": self.n,
+            "board": self.kind == FrameKind::Board,
+            "time": self.time,
+            "resource_uri": self.resource_uri,
+            "path": self.frame.path,
+            "file_uri": self.frame.file_uri,
+        })
+    }
+}
+
+/// 结果对应的视频画面源（缓存的视频或本地原文件）。
+fn visual_source(result: &avr_core::models::AnalyzeResult) -> Option<PathBuf> {
+    let cache = PathBuf::from(&result.cache_dir);
+    ["source.mp4", "visual_proxy.mp4", "clip.mp4"]
+        .iter()
+        .map(|f| cache.join(f))
+        .chain(std::iter::once(PathBuf::from(&result.video.url)))
+        .find(|p| p.is_file())
 }
 
 fn error_json(code: &str, message: impl std::fmt::Display, hint: &str) -> CallToolResult {
@@ -244,71 +303,196 @@ impl AvrMcpServer {
     }
 
     #[tool(
-        description = "按编号取关键帧（只读）。返回帧信息与 JPEG 图片；也可直接读取 resource avr://job/{media_key}/frame/{n}"
+        description = "按编号取图（只读）。board=true 取板书 / 幻灯片帧（索引 board[].n），否则取分段关键帧（frames[].n）；ns 一次最多 4 张。返回帧信息与 JPEG（长边默认 1280）；也可读 resource avr://job/{media_key}/frame/{n} 或 /board/{n}"
     )]
     async fn get_frame(
         &self,
         Parameters(p): Parameters<GetFrameParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        match self.capture_frame(&p.media_key, p.n, p.width).await {
-            Ok((fref, frame)) => {
-                let info = serde_json::json!({
-                    "n": fref.n,
-                    "time": fref.time,
-                    "resource_uri": fref.resource_uri,
-                    "path": frame.path,
-                    "file_uri": frame.file_uri,
-                });
-                let mut content = vec![Content::text(info.to_string())];
-                if let Some(b64) = frame.base64 {
-                    content.push(Content::image(b64, "image/jpeg"));
-                }
-                Ok(CallToolResult::success(content))
+        let kf = &self.ctx.config.keyframes;
+        let ns = match requested_frames(p.n, p.ns, kf.max_frames_per_call) {
+            Ok(v) => v,
+            Err(msg) => {
+                return Ok(error_json(
+                    "INVALID_ARGUMENT",
+                    msg,
+                    "用 ns 传 1–4 个帧编号。",
+                ))
             }
-            Err(msg) => Ok(error_json(
-                "FRAME_UNAVAILABLE",
-                msg,
-                "确认 media_key 与帧编号。",
-            )),
+        };
+        let kind = if p.board {
+            FrameKind::Board
+        } else {
+            FrameKind::Section
+        };
+        let mut texts = Vec::new();
+        let mut images = Vec::new();
+        for n in ns {
+            match self.capture_frame(&p.media_key, kind, n, p.width).await {
+                Ok(c) => {
+                    texts.push(c.info());
+                    if let Some(b64) = c.frame.base64 {
+                        images.push(Content::image(b64, "image/jpeg"));
+                    }
+                }
+                Err(msg) => {
+                    return Ok(error_json(
+                        "FRAME_UNAVAILABLE",
+                        msg,
+                        "确认 media_key 与帧编号（board=true 时用索引 board[].n）。",
+                    ))
+                }
+            }
         }
+        // 单张时保持旧格式（顶层字段），多张时放进 frames 数组。
+        let info = if texts.len() == 1 {
+            texts.remove(0)
+        } else {
+            serde_json::json!({ "frames": texts })
+        };
+        let mut content = vec![Content::text(info.to_string())];
+        content.extend(images);
+        Ok(CallToolResult::success(content))
     }
 
-    /// 截取第 n 帧（缓存的视频源或本地原文件）。
+    /// 读取（必要时计算并缓存）板书帧。
+    async fn board_frames(
+        &self,
+        result: &avr_core::models::AnalyzeResult,
+    ) -> Result<Vec<avr_core::keyframes::Keyframe>, String> {
+        let video = visual_source(result).ok_or_else(|| "没有可用的视频画面源".to_string())?;
+        let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
+            .map_err(|e| e.format_user())?;
+        avr_core::keyframes::load_or_compute(
+            &ffmpeg,
+            &video,
+            &PathBuf::from(&result.cache_dir),
+            &self.ctx.config.keyframes,
+            result.transcript.as_ref(),
+        )
+        .await
+        .map_err(|e| e.format_user())
+    }
+
+    /// 截取第 n 帧（分段关键帧或板书帧），按配置的长边与 JPEG 质量输出。
     async fn capture_frame(
         &self,
         media_key: &str,
+        kind: FrameKind,
         n: usize,
-        width: Option<u32>,
-    ) -> Result<(FrameRef, CapturedFrame), String> {
+        long_side: Option<u32>,
+    ) -> Result<Captured, String> {
         let key = MediaKey::parse(media_key).map_err(|e| e.format_user())?;
         let result = load_result(&self.ctx, &key)
             .map_err(|e| e.format_user())?
             .ok_or_else(|| "未找到缓存，先调用 analyze_media".to_string())?;
-        let fref = frame_ref(&result, n).map_err(|e| e.to_string())?;
+        self.capture_from(&result, kind, n, long_side).await
+    }
+
+    async fn capture_from(
+        &self,
+        result: &avr_core::models::AnalyzeResult,
+        kind: FrameKind,
+        n: usize,
+        long_side: Option<u32>,
+    ) -> Result<Captured, String> {
+        let (time, resource_uri) = match kind {
+            FrameKind::Section => {
+                let f = frame_ref(result, n).map_err(|e| e.to_string())?;
+                (f.time, f.resource_uri)
+            }
+            FrameKind::Board => {
+                let frames = self.board_frames(result).await?;
+                let f = frames
+                    .get(n)
+                    .ok_or_else(|| format!("板书帧编号 {n} 超出范围（共 {} 张）", frames.len()))?;
+                (f.time, board_uri(&result.media_key, n))
+            }
+        };
         let cache = PathBuf::from(&result.cache_dir);
-        let source = ["source.mp4", "visual_proxy.mp4", "clip.mp4"]
-            .iter()
-            .map(|f| cache.join(f))
-            .chain(std::iter::once(PathBuf::from(&result.video.url)))
-            .find(|p| p.is_file())
-            .ok_or_else(|| "没有可用的视频画面源".to_string())?;
+        let source = visual_source(result).ok_or_else(|| "没有可用的视频画面源".to_string())?;
         let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
             .map_err(|e| e.format_user())?;
-        let frames = avr_core::frames::extract_frames(
-            &ffmpeg,
-            &source,
-            &[fref.time],
-            &cache.join("frames"),
-            width.unwrap_or(1280),
-            FrameDelivery::Both,
-        )
-        .await
-        .map_err(|e| e.format_user())?;
-        let frame = frames
-            .into_iter()
-            .next()
-            .ok_or_else(|| "截帧失败".to_string())?;
-        Ok((fref, frame))
+        let kf = &self.ctx.config.keyframes;
+        let long = long_side.unwrap_or(kf.image_long_side).max(16);
+        let name = match kind {
+            FrameKind::Section => format!("f{n}_{long}_{}.jpg", kf.jpeg_quality),
+            FrameKind::Board => format!("b{n}_{long}_{}.jpg", kf.jpeg_quality),
+        };
+        let path = cache.join("frames").join(name);
+        avr_core::ffmpeg::capture_frame_spec(&ffmpeg, &source, time, &path, long, kf.jpeg_quality)
+            .await
+            .map_err(|e| e.format_user())?;
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        use base64::Engine as _;
+        let frame = CapturedFrame {
+            time,
+            path: path.display().to_string(),
+            file_uri: avr_core::paths::to_file_uri(&path),
+            markdown: String::new(),
+            width: long,
+            height: 0,
+            base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        };
+        Ok(Captured {
+            kind,
+            n,
+            time,
+            resource_uri,
+            frame,
+        })
+    }
+
+    /// 索引模式加“板书区间”段落；转写稀少时附最重要的至多 `sparse_attach` 张板书图。
+    /// 选帧失败（如无画面源）只记 `board_error`，不影响转写结果。
+    async fn attach_board(
+        &self,
+        r: &avr_core::models::AnalyzeResult,
+        mode: ResponseMode,
+        json: &mut serde_json::Value,
+    ) -> Vec<Content> {
+        let kf = &self.ctx.config.keyframes;
+        let duration = r.video.duration.max(
+            r.transcript
+                .as_ref()
+                .and_then(|t| t.segments.last())
+                .map(|s| s.end)
+                .unwrap_or(0.0),
+        );
+        let sparse = avr_core::keyframes::is_sparse(r.transcript.as_ref(), duration, kf);
+        if mode != ResponseMode::Index && !sparse {
+            return Vec::new();
+        }
+        let Some(obj) = json.as_object_mut() else {
+            return Vec::new();
+        };
+        let frames = match self.board_frames(r).await {
+            Ok(f) => f,
+            Err(e) => {
+                obj.insert("board_error".into(), e.into());
+                return Vec::new();
+            }
+        };
+        if mode == ResponseMode::Index {
+            obj.insert(
+                "board".into(),
+                serde_json::to_value(board_intervals(r, &frames)).unwrap_or_default(),
+            );
+        }
+        let mut images = Vec::new();
+        if sparse {
+            let ns = top_board_frames(&frames, kf.sparse_attach.min(kf.max_frames_per_call));
+            for &n in &ns {
+                if let Ok(c) = self.capture_from(r, FrameKind::Board, n, None).await {
+                    if let Some(b64) = c.frame.base64 {
+                        images.push(Content::image(b64, "image/jpeg"));
+                    }
+                }
+            }
+            obj.insert("sparse_transcript".into(), true.into());
+            obj.insert("board_images".into(), serde_json::json!(ns));
+        }
+        images
     }
 
     async fn analyze_impl(&self, p: AnalyzeMediaParams) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -331,9 +515,12 @@ impl AvrMcpServer {
                 if let Some(obj) = json.as_object_mut() {
                     obj.insert("response_mode".into(), resolved.as_str().into());
                 }
-                Ok(CallToolResult::success(vec![Content::text(
+                let images = self.attach_board(&r, resolved, &mut json).await;
+                let mut content = vec![Content::text(
                     serde_json::to_string(&json).unwrap_or_default(),
-                )]))
+                )];
+                content.extend(images);
+                Ok(CallToolResult::success(content))
             }
             Err(e) => Ok(CallToolResult::success(vec![Content::text(
                 serde_json::json!({
@@ -402,7 +589,7 @@ impl ServerHandler for AvrMcpServer {
                 version: avr_core::VERSION.into(),
             },
             instructions: Some(
-                "视频文本提取工具。analyze_media 默认返回 compact；指定 response_mode=index 时只返回摘要索引，再用 read_transcript 按时间范围取原文，用 get_frame 或 resource 取关键帧。不做总结。".into(),
+                "视频文本提取工具。analyze_media 默认返回 compact；指定 response_mode=index 时只返回摘要索引（含 board[] 板书区间），再用 read_transcript 按时间范围取原文，用 get_frame（board=true 取板书帧，ns 一次最多 4 张）或 resource 取图。转写稀少的视频会直接附上最重要的板书图。不做总结。".into(),
             ),
         }
     }
@@ -414,13 +601,22 @@ impl ServerHandler for AvrMcpServer {
     ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
         Ok(ListResourceTemplatesResult {
             next_cursor: None,
-            resource_templates: vec![RawResourceTemplate {
-                uri_template: "avr://job/{media_key}/frame/{n}".into(),
-                name: "关键帧".into(),
-                description: Some("analyze_media 结果 frames[] 中的关键帧（JPEG）".into()),
-                mime_type: Some("image/jpeg".into()),
-            }
-            .no_annotation()],
+            resource_templates: vec![
+                RawResourceTemplate {
+                    uri_template: "avr://job/{media_key}/frame/{n}".into(),
+                    name: "关键帧".into(),
+                    description: Some("analyze_media 结果 frames[] 中的关键帧（JPEG）".into()),
+                    mime_type: Some("image/jpeg".into()),
+                }
+                .no_annotation(),
+                RawResourceTemplate {
+                    uri_template: "avr://job/{media_key}/board/{n}".into(),
+                    name: "板书帧".into(),
+                    description: Some("索引 board[] 中的板书 / 幻灯片帧（JPEG）".into()),
+                    mime_type: Some("image/jpeg".into()),
+                }
+                .no_annotation(),
+            ],
         })
     }
 
@@ -429,13 +625,14 @@ impl ServerHandler for AvrMcpServer {
         request: ReadResourceRequestParam,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-        let (key, n) = parse_frame_uri(&request.uri)
+        let (key, kind, n) = parse_any_frame_uri(&request.uri)
             .map_err(|e| rmcp::ErrorData::invalid_params(e.to_string(), None))?;
-        let (_, frame) = self
-            .capture_frame(key.as_str(), n, None)
+        let c = self
+            .capture_frame(key.as_str(), kind, n, None)
             .await
             .map_err(|e| rmcp::ErrorData::resource_not_found(e, None))?;
-        let blob = frame
+        let blob = c
+            .frame
             .base64
             .ok_or_else(|| rmcp::ErrorData::internal_error("截帧无数据", None))?;
         Ok(ReadResourceResult {
@@ -472,4 +669,21 @@ pub fn run_stdio(ctx: PipelineContext, deps: Deps) -> Result<(), AvrError> {
             })?;
             Ok(())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_frames;
+
+    #[test]
+    fn frame_request_limits() {
+        assert_eq!(requested_frames(Some(1), None, 4).unwrap(), vec![1]);
+        assert_eq!(
+            requested_frames(Some(2), Some(vec![0, 2, 3]), 4).unwrap(),
+            vec![2, 0, 3]
+        );
+        assert!(requested_frames(None, Some(vec![0, 1, 2, 3, 4]), 4).is_err());
+        assert!(requested_frames(None, None, 4).is_err());
+        assert!(requested_frames(None, Some(vec![]), 4).is_err());
+    }
 }
