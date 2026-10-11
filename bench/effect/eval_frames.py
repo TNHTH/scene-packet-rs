@@ -46,7 +46,7 @@ def load_frames(p, budget=None):
 
 
 def group_of(item):
-    for k in ("boundary_tol", "tol"):
+    for k in ("g", "boundary_tol", "tol"):
         if isinstance(item.get(k), (int, float)):
             return "exact" if item[k] <= 2 else "coarse"
     p = str(item.get("precision", "")).lower()
@@ -66,6 +66,9 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     q = json.loads(Path(a.questions).read_text())
+    # 单视频格式：{"video": "x.webm", "questions": [...]}（visible: [[from, to], ...]，g: 2|10）
+    if isinstance(q.get("questions"), list) and "video" in q:
+        q = {Path(q["video"]).stem: {"questions": q["questions"]}}
     durs = {k: float(v) for k, v in (x.split("=", 1) for x in a.duration)}
     out = {"videos": {}, "tol": a.tol}
     tot_hit = tot_q = tot_frames = 0
@@ -77,9 +80,9 @@ def main(argv=None):
         qs = q.get(vid, {}).get("questions", []) if isinstance(q.get(vid), dict) else []
         rows = []
         for item in qs:
-            lo, hi = item["visible_from"] - a.tol, item["visible_to"] + a.tol
-            hits = [t for t in times if lo <= t <= hi]
-            rows.append({"id": item["id"], "group": group_of(item), "from": item["visible_from"], "to": item["visible_to"], "covered": bool(hits), "frames": hits})
+            spans = item.get("visible") or [[item["visible_from"], item["visible_to"]]]
+            hits = [t for t in times if any(lo - a.tol <= t <= hi + a.tol for lo, hi in spans)]
+            rows.append({"id": item["id"], "group": group_of(item), "spans": spans, "covered": bool(hits), "frames": hits})
         hit = sum(r["covered"] for r in rows)
         fph = len(times) / (dur / 3600) if dur else None
         groups = {g: [sum(r["covered"] for r in rows if r["group"] == g), sum(r["group"] == g for r in rows)] for g in ("exact", "coarse")}
@@ -96,7 +99,7 @@ def main(argv=None):
         print(f"{vid}: 覆盖 {v['covered']}/{v['total']}（精确题 {g['exact'][0]}/{g['exact'][1]}，±10 秒题 {g['coarse'][0]}/{g['coarse'][1]}），{v['frames']} 帧，时长 {v['duration']} 秒，每小时 {fph} 帧")
         for r in v["questions"]:
             mark = "✓" if r["covered"] else "✗"
-            print(f"  {mark} {r['id']} ({'精确' if r['group'] == 'exact' else '±10s'}) [{r['from']}, {r['to']}] 命中帧 {r['frames']}")
+            print(f"  {mark} {r['id']} ({'精确' if r['group'] == 'exact' else '±10s'}) {r['spans']} 命中帧 {r['frames']}")
     g = out["groups"]
     print(f"合计{'（预算前 ' + str(a.budget) + ' 帧）' if a.budget else ''}：覆盖 {tot_hit}/{tot_q}（精确 {g['exact'][0]}/{g['exact'][1]}，±10 秒 {g['coarse'][0]}/{g['coarse'][1]}），{tot_frames} 帧，每小时 {out['frames_per_hour'] or 0:.0f} 帧")
     return out
