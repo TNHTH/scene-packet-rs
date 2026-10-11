@@ -14,6 +14,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub asr: AsrConfig,
     #[serde(default)]
+    pub keyframes: crate::keyframes::KeyframeConfig,
+    #[serde(default)]
     pub output: OutputConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
@@ -149,6 +151,7 @@ impl Default for AppConfig {
                 active_preset: default_whisper_preset(),
                 model_path: String::new(),
             },
+            keyframes: Default::default(),
             output: OutputConfig {
                 cache_dir: String::new(),
             },

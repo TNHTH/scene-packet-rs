@@ -10,6 +10,7 @@ pub mod ffmpeg;
 pub mod fingerprint;
 pub mod frames;
 pub mod jobs;
+pub mod keyframes;
 pub mod media;
 pub mod models;
 pub mod paths;
