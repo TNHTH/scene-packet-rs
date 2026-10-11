@@ -173,6 +173,17 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
             .await,
         );
         assert!(is_error(&too_many), "{too_many}");
+        for w in [0, 63, 4097] {
+            let r = json_of(
+                &call(
+                    &client,
+                    "get_frame",
+                    json!({ "media_key": key, "n": 0, "width": w }),
+                )
+                .await,
+            );
+            assert!(is_error(&r), "width={w} 应被拒绝：{r}");
+        }
         let bad = json_of(
             &call(
                 &client,
@@ -252,8 +263,8 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
         .lines()
         .map(|l| serde_json::from_str(l).expect("每行是 JSON"))
         .collect();
-    // 有 ffmpeg 时：get_frame 单张 1 次 + 板书多张 / 超限 / 越界 3 次。
-    let calls = 3 + pages + 4 * usize::from(ff.is_some()) + 7 * 4;
+    // 有 ffmpeg 时：get_frame 单张 1 次 + 板书多张 / 超限 / 越界 3 次 + width 越界 3 次。
+    let calls = 3 + pages + 7 * usize::from(ff.is_some()) + 7 * 4;
     assert_eq!(lines.len(), calls, "日志行数应等于工具调用次数");
     for l in &lines {
         for k in ["ts", "tool", "args", "bytes", "ok"] {

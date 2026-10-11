@@ -74,8 +74,22 @@ struct GetFrameParams {
     /// true = 取板书 / 幻灯片帧（索引 board[]）；默认 false = 分段关键帧
     #[serde(default)]
     board: bool,
-    /// 图片长边像素，默认 keyframes.image_long_side（1280）
+    /// 图片长边像素，64..=4096，默认 keyframes.image_long_side（1280）
     width: Option<u32>,
+}
+
+/// get_frame 的 width（长边像素）允许范围。
+pub const FRAME_WIDTH_RANGE: std::ops::RangeInclusive<u32> = 64..=4096;
+
+fn check_width(w: Option<u32>) -> Result<(), String> {
+    match w {
+        Some(w) if !FRAME_WIDTH_RANGE.contains(&w) => Err(format!(
+            "width 须在 {}..={} 之间，收到 {w}",
+            FRAME_WIDTH_RANGE.start(),
+            FRAME_WIDTH_RANGE.end()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// 请求的帧编号列表：合并 n 与 ns、去重保序，并检查数量上限。
@@ -320,6 +334,13 @@ impl AvrMcpServer {
                 ))
             }
         };
+        if let Err(msg) = check_width(p.width) {
+            return Ok(error_json(
+                "INVALID_ARGUMENT",
+                msg,
+                "width 取 64..=4096，或省略用默认 1280。",
+            ));
+        }
         let kind = if p.board {
             FrameKind::Board
         } else {
@@ -414,7 +435,9 @@ impl AvrMcpServer {
         let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
             .map_err(|e| e.format_user())?;
         let kf = &self.ctx.config.keyframes;
-        let long = long_side.unwrap_or(kf.image_long_side).max(16);
+        let long = long_side
+            .unwrap_or(kf.image_long_side)
+            .clamp(*FRAME_WIDTH_RANGE.start(), *FRAME_WIDTH_RANGE.end());
         let name = match kind {
             FrameKind::Section => format!("f{n}_{long}_{}.jpg", kf.jpeg_quality),
             FrameKind::Board => format!("b{n}_{long}_{}.jpg", kf.jpeg_quality),
@@ -673,7 +696,17 @@ pub fn run_stdio(ctx: PipelineContext, deps: Deps) -> Result<(), AvrError> {
 
 #[cfg(test)]
 mod tests {
-    use super::requested_frames;
+    use super::{check_width, requested_frames};
+
+    #[test]
+    fn width_must_be_in_range() {
+        assert!(check_width(None).is_ok());
+        assert!(check_width(Some(64)).is_ok());
+        assert!(check_width(Some(4096)).is_ok());
+        assert!(check_width(Some(63)).is_err());
+        assert!(check_width(Some(4097)).is_err());
+        assert!(check_width(Some(0)).is_err());
+    }
 
     #[test]
     fn frame_request_limits() {
