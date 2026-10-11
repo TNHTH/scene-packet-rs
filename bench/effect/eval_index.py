@@ -102,6 +102,8 @@ def main():
     ap.add_argument("--set", default="/workspace/avr-effect-set")
     ap.add_argument("--questions"); ap.add_argument("--boot", type=int, default=2000)
     ap.add_argument("--json")
+    ap.add_argument("--postprocess", action="store_true",
+                    help="先按 P4-3 打 suspect 标记，分段时跳过（与产品索引一致）")
     a = ap.parse_args()
     man = json.load(open(f"{a.set}/manifest.json"))
     qs = json.load(open(a.questions or f"{a.set}/questions.json"))
@@ -109,13 +111,17 @@ def main():
     print("== 视频 ==")
     for v in man["videos"]:
         tr = json.load(open(f"{a.set}/transcripts/{v['id']}.json"))
-        secs = sections(tr["segments"])
+        segs = tr["segments"]
+        if a.postprocess:
+            from postprocess import pp
+            segs = [x for x in pp(segs) if not x.get("suspect")]
+        secs = sections(segs)
         summ = {"A_first40": [summ_a(s) for s in secs], "B_tfidf": summ_b_all(secs),
                 "C_headmidtail": [summ_c(s) for s in secs],
                 "UPPER_fulltext": [" ".join(s["texts"]) for s in secs]}
         n = len(secs); low = n < 6
         vids[v["id"]] = dict(secs=secs, summ=summ, low=low)
-        print(f"{v['id']:10s} 句数={len(tr['segments']):3d} 段数={n:2d} 随机hit@1={1/n:.2f} hit@2={min(2,n)/n:.2f}"
+        print(f"{v['id']:10s} 句数={len(segs):3d} 段数={n:2d} 随机hit@1={1/n:.2f} hit@2={min(2,n)/n:.2f}"
               + ("  [LOW_N<6 → 主指标 hit@1]" if low else ""))
     rows = []
     for q in qs:
