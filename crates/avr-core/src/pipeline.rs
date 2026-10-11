@@ -368,9 +368,13 @@ fn asr_fingerprint(ctx: &PipelineContext, deps: &Deps) -> AsrFingerprint {
     AsrFingerprint {
         model: crate::fingerprint::content_fingerprint(&model_path).unwrap_or_default(),
         version: format!(
-            "{}|args{}",
+            "{}|args{}{}",
             deps.tools.version(ctx, ToolId::Whisper).unwrap_or_default(),
-            crate::asr::presets::ARGS_REV
+            crate::asr::presets::ARGS_REV,
+            match ctx.config.asr.zh_initial_prompt.trim() {
+                "" => String::new(),
+                p => format!("|prompt:{p}"),
+            }
         ),
     }
 }

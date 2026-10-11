@@ -12,6 +12,8 @@ user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 default = "auto"
 active_preset = "whisper-cpp-cublas"
 model_path = "E:/models/ggml-large-v3-turbo.bin"
+# language=zh 时的 whisper 初始提示词，默认空=不传。有风险：实测会漏整句（CER 0.047→0.244）。
+# zh_initial_prompt = "以下是普通话的句子。"
 
 [output]
 cache_dir = ""

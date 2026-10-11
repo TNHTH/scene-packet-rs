@@ -1,6 +1,8 @@
 pub mod engine;
 pub mod postprocess;
 pub mod presets;
+mod t2s_table;
+pub mod zh;
 
 use crate::config::AppConfig;
 use crate::error::AvrError;

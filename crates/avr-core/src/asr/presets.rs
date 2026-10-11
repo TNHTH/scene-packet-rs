@@ -25,15 +25,23 @@ pub fn default_model_path(root_models: &Path) -> PathBuf {
     root_models.join("ggml-large-v3-turbo.bin")
 }
 
-/// language=zh 时传给 whisper 的简体初始提示（P4-1）。whisper medium/large 对 zh
-/// 常输出繁体；用简体提示把输出推向简体写法，不引入繁简转换依赖。
-pub const ZH_INITIAL_PROMPT: &str = "以下是普通话的句子。";
+/// 过去 P4-1 默认使用的简体初始提示；现默认不传，仅作配置示例（`asr.zh_initial_prompt`）。
+pub const ZH_INITIAL_PROMPT_EXAMPLE: &str = "以下是普通话的句子。";
 
-/// ASR 参数修订号：会改变转写结果的参数变化时递增，并入缓存指纹使旧转写失效。
-pub const ARGS_REV: u32 = 2; // 2: P4-3 后处理
+/// ASR 参数修订号：会改变转写结果的参数 / 后处理变化时递增，并入缓存指纹使旧转写失效。
+/// 2: P4-3 后处理；3: zh 改为默认不传提示词 + 转写后繁→简。
+pub const ARGS_REV: u32 = 3;
 
 impl Preset {
-    pub fn args(&self, model: &Path, audio: &Path, language: &str, out_base: &str) -> Vec<String> {
+    /// `zh_prompt`：language=zh 时传的初始提示词，空串不传（默认）。
+    pub fn args(
+        &self,
+        model: &Path,
+        audio: &Path,
+        language: &str,
+        out_base: &str,
+        zh_prompt: &str,
+    ) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "-m".into(),
             model.display().to_string(),
@@ -45,9 +53,9 @@ impl Preset {
             "-of".into(),
             out_base.into(),
         ];
-        if language == "zh" {
+        if language == "zh" && !zh_prompt.trim().is_empty() {
             args.push("--prompt".into());
-            args.push(ZH_INITIAL_PROMPT.into());
+            args.push(zh_prompt.into());
         }
         args
     }
@@ -57,26 +65,39 @@ impl Preset {
 mod tests {
     use super::*;
 
-    fn args_for(lang: &str) -> Vec<String> {
-        get_preset("whisper-cpp-cpu").args(Path::new("m.bin"), Path::new("a.wav"), lang, "out")
+    fn args_for(lang: &str, prompt: &str) -> Vec<String> {
+        get_preset("whisper-cpp-cpu").args(
+            Path::new("m.bin"),
+            Path::new("a.wav"),
+            lang,
+            "out",
+            prompt,
+        )
     }
 
     #[test]
-    fn zh_passes_simplified_prompt() {
-        let a = args_for("zh");
+    fn no_prompt_by_default() {
+        for lang in ["zh", "en", "auto"] {
+            assert!(
+                !args_for(lang, "").iter().any(|x| x == "--prompt"),
+                "{lang}"
+            );
+        }
+    }
+
+    #[test]
+    fn configured_prompt_only_for_zh() {
+        let a = args_for("zh", ZH_INITIAL_PROMPT_EXAMPLE);
         let i = a
             .iter()
             .position(|x| x == "--prompt")
-            .expect("zh 应传 --prompt");
-        assert_eq!(a[i + 1], ZH_INITIAL_PROMPT);
-        assert_eq!(a.iter().filter(|x| *x == "--prompt").count(), 1);
-    }
-
-    #[test]
-    fn non_zh_has_no_prompt() {
+            .expect("zh 配置后应传 --prompt");
+        assert_eq!(a[i + 1], ZH_INITIAL_PROMPT_EXAMPLE);
         for lang in ["en", "ja", "auto", "zh-TW", "yue", ""] {
             assert!(
-                !args_for(lang).iter().any(|x| x == "--prompt"),
+                !args_for(lang, ZH_INITIAL_PROMPT_EXAMPLE)
+                    .iter()
+                    .any(|x| x == "--prompt"),
                 "{lang} 不应传 --prompt"
             );
         }

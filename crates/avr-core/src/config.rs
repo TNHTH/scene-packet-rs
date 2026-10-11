@@ -87,6 +87,10 @@ pub struct AsrConfig {
     pub active_preset: String,
     #[serde(default)]
     pub model_path: String,
+    /// language=zh 时传给 whisper 的初始提示词（`--prompt`），默认空 = 不传。
+    /// 风险：实测会改变解码，cns_space 上漏掉整句（CER 0.047→0.244），不建议开启。
+    #[serde(default)]
+    pub zh_initial_prompt: String,
 }
 
 fn default_auto() -> String {
@@ -146,11 +150,7 @@ impl Default for AppConfig {
                 cookies_file: String::new(),
                 user_agent: String::new(),
             },
-            asr: AsrConfig {
-                default: default_auto(),
-                active_preset: default_whisper_preset(),
-                model_path: String::new(),
-            },
+            asr: AsrConfig::default(),
             keyframes: Default::default(),
             output: OutputConfig {
                 cache_dir: String::new(),
@@ -182,6 +182,7 @@ impl Default for AsrConfig {
             default: default_auto(),
             active_preset: default_whisper_preset(),
             model_path: String::new(),
+            zh_initial_prompt: String::new(),
         }
     }
 }
