@@ -58,6 +58,7 @@ pub fn parse_vtt(content: &str, language: &str) -> Transcript {
                         start: s,
                         end: end.unwrap_or(s),
                         text,
+                        suspect: false,
                     });
                 }
             }
@@ -123,7 +124,12 @@ pub fn parse_srt(content: &str, language: &str) -> Transcript {
             let end = parse_srt_ts(&m[2]);
             let text = text_lines.join(" ").trim().to_string();
             if !text.is_empty() {
-                segments.push(TranscriptSegment { start, end, text });
+                segments.push(TranscriptSegment {
+                    start,
+                    end,
+                    text,
+                    suspect: false,
+                });
             }
         }
     }

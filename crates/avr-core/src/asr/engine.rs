@@ -54,7 +54,9 @@ pub async fn run_preset(
         return Err(asr_failed(&output.stderr));
     }
     let content = std::fs::read_to_string(&srt_path).map_err(|e| asr_failed(&e.to_string()))?;
-    Ok(parse_srt(&content, language).segments)
+    Ok(super::postprocess::postprocess(
+        parse_srt(&content, language).segments,
+    ))
 }
 
 fn resolve_model(root: &DataRoot, cfg: &AppConfig, _preset: &super::presets::Preset) -> PathBuf {

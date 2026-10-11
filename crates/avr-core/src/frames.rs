@@ -205,6 +205,7 @@ mod tests {
                     start: s,
                     end: s + 1.0,
                     text: format!("seg {s}"),
+                    suspect: false,
                 })
                 .collect(),
         }

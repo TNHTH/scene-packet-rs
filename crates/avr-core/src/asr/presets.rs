@@ -30,7 +30,7 @@ pub fn default_model_path(root_models: &Path) -> PathBuf {
 pub const ZH_INITIAL_PROMPT: &str = "以下是普通话的句子。";
 
 /// ASR 参数修订号：会改变转写结果的参数变化时递增，并入缓存指纹使旧转写失效。
-pub const ARGS_REV: u32 = 1;
+pub const ARGS_REV: u32 = 2; // 2: P4-3 后处理
 
 impl Preset {
     pub fn args(&self, model: &Path, audio: &Path, language: &str, out_base: &str) -> Vec<String> {

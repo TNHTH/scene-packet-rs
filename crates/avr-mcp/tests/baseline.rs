@@ -141,6 +141,7 @@ async fn summary_index_roundtrip_reconstructs_full_payload() {
                 start: s.start,
                 end: s.end,
                 text: s.text.clone(),
+                suspect: false,
             })
             .collect(),
     };

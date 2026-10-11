@@ -1,4 +1,5 @@
 pub mod engine;
+pub mod postprocess;
 pub mod presets;
 
 use crate::config::AppConfig;

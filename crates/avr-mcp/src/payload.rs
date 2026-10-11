@@ -79,6 +79,7 @@ pub(crate) mod tests {
                     start: 0.0,
                     end: 1.0,
                     text: text.into(),
+                    suspect: false,
                 }],
             }),
             transcript_path: "p".into(),

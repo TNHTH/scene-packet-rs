@@ -46,6 +46,10 @@ pub struct TranscriptSegment {
     pub start: f64,
     pub end: f64,
     pub text: String,
+    /// ASR 后处理标记的疑似幻觉（时长与字数明显不匹配，见 `asr::postprocess`）。
+    /// 为 false 时不序列化，旧缓存 / 字幕 JSON 不受影响。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspect: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
