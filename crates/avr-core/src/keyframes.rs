@@ -44,6 +44,10 @@ pub struct KeyframeConfig {
     /// 前一帧边缘被后一帧（3×3 邻域）覆盖的比例 ≥ 此值，视为“逐步出现”（PPT 动画 / 板书续写），
     /// 只保留后一帧。
     pub contain_ratio: f32,
+    /// 必选帧（ADR 0011）：在内容大幅减少 / 翻页 / 切场景 / 视频结尾之前这么多秒内挑一张。
+    pub mandatory_pre_secs: f64,
+    /// 有效内容降到前段峰值的这个比例以下（并持续 `confirm_samples` 个采样）算“大幅减少”（擦板）。
+    pub drop_ratio: f32,
     /// 返回给 AI 的图片长边（像素）。
     pub image_long_side: u32,
     /// 返回给 AI 的 JPEG 质量（1–100）。
@@ -68,6 +72,8 @@ impl Default for KeyframeConfig {
             max_per_hour: 40.0,
             min_frames: 12,
             contain_ratio: 0.85,
+            mandatory_pre_secs: 8.0,
+            drop_ratio: 0.7,
             image_long_side: 1280,
             jpeg_quality: 85,
             max_frames_per_call: 4,
@@ -323,38 +329,140 @@ pub fn select(
             kept.push(p);
         }
     }
-    // 不足 min_frames：反复把最长的区间对半分，各取最佳帧（短视频保底）。
-    while kept.len() < cfg.min_frames {
-        let Some((idx, _)) = kept
-            .iter()
-            .enumerate()
-            .filter(|(_, k)| k.1 .1 - k.1 .0 >= 2)
-            .max_by_key(|(_, k)| k.1 .1 - k.1 .0)
+    // —— 必选帧（ADR 0011）：每次内容大幅减少（擦板 / 翻页 / 切场景导致）之前与视频结尾，
+    // 在其前 mandatory_pre_secs 秒里挑有效内容最多（遮挡最少）的一张；不占名额、不被打分挤掉。
+    let n = samples.len();
+    let pre = ((cfg.mandatory_pre_secs / cfg.interval_secs).round() as usize).max(1);
+    let mut events = drop_events(samples, cfg, pre);
+    events.push(n);
+    // 与去重同一口径：哈希相近且（有边缘信息时）内容被包含。
+    let same = |a: usize, m: usize| {
+        a == m
+            || (hamming(samples[a].hash, samples[m].hash) <= cfg.merge_hamming
+                && (samples[a].edges.is_empty()
+                    || contained(&samples[a].edges, &samples[m].edges) >= cfg.contain_ratio))
+    };
+    let mut must: Vec<(usize, (usize, usize))> = Vec::new();
+    for e in events {
+        let w = (e.saturating_sub(pre), e);
+        if w.0 >= w.1 {
+            continue;
+        }
+        let b = best(samples, w);
+        if !must.iter().any(|m| m.0 == b) {
+            must.push((b, w));
+        }
+    }
+    // 补充帧：与某张必选帧几乎相同的丢弃（区间并给那张必选帧）。
+    kept.retain(|k| {
+        let dup = must.iter_mut().find(|m| same(k.0, m.0));
+        if let Some(m) = dup {
+            m.1 = (m.1 .0.min(k.1 .0), m.1 .1.max(k.1 .1));
+            false
+        } else {
+            true
+        }
+    });
+    // 不足 min_frames：反复把最长的区间对半分，各取最佳帧（短视频保底）；
+    // 必选帧所在的一半保留必选帧，另一半补一张。
+    let mut all: Vec<(usize, (usize, usize), bool)> = must
+        .iter()
+        .map(|&(i, r)| (i, r, true))
+        .chain(kept.iter().map(|&(i, r)| (i, r, false)))
+        .collect();
+    while all.len() < cfg.min_frames {
+        let Some(idx) = (0..all.len())
+            .filter(|&j| all[j].1 .1 - all[j].1 .0 >= 2)
+            .max_by_key(|&j| all[j].1 .1 - all[j].1 .0)
         else {
             break;
         };
-        let (a, b) = kept[idx].1;
-        let m = (a + b) / 2;
-        kept[idx] = (best(samples, (a, m)), (a, m));
-        kept.insert(idx + 1, (best(samples, (m, b)), (m, b)));
+        let (i, (a, b), m) = all[idx];
+        let mid = (a + b) / 2;
+        let (h1, h2) = ((a, mid), (mid, b));
+        let pick = |h: (usize, usize)| {
+            if m && (h.0..h.1).contains(&i) {
+                (i, h, true)
+            } else {
+                (best(samples, h), h, false)
+            }
+        };
+        all[idx] = pick(h1);
+        all.push(pick(h2));
     }
+    // 名额：总数 max(每小时上限, min_frames)，必选帧先占，补充帧按有效内容分剩余名额。
     let cap = ((duration / 3600.0 * cfg.max_per_hour).ceil() as usize).max(cfg.min_frames);
-    if kept.len() > cap {
-        kept.sort_by(|a, b| samples[b.0].content.total_cmp(&samples[a.0].content));
-        kept.truncate(cap);
-        kept.sort_by_key(|k| k.0);
+    let n_must = all.iter().filter(|x| x.2).count();
+    let mut supp: Vec<(usize, (usize, usize), bool)> =
+        all.iter().filter(|x| !x.2).copied().collect();
+    supp.sort_by(|a, b| samples[b.0].content.total_cmp(&samples[a.0].content));
+    supp.truncate(cap.saturating_sub(n_must));
+    let mut all: Vec<(usize, (usize, usize))> = all
+        .iter()
+        .filter(|x| x.2)
+        .chain(supp.iter())
+        .map(|x| (x.0, x.1))
+        .collect();
+    all.sort_by_key(|k| (k.0, k.1 .0));
+    all.dedup_by_key(|k| k.0);
+    // 区间首尾相接：第 k 帧从其区间起点（不早于上一帧）开始，到下一帧起点结束。
+    let mut starts: Vec<f64> = Vec::with_capacity(all.len());
+    for (k, &(i, r)) in all.iter().enumerate() {
+        let t = samples[i].time;
+        let st = if k == 0 {
+            samples[0].time.min(t)
+        } else {
+            let prev = samples[all[k - 1].0].time;
+            let rs = samples[r.0].time;
+            if rs > prev && rs <= t {
+                rs
+            } else {
+                (prev + t) / 2.0
+            }
+        };
+        starts.push(st);
     }
-    kept.iter()
+    all.iter()
         .enumerate()
-        .map(|(n, &(i, r))| Keyframe {
-            n,
+        .map(|(k, &(i, _))| Keyframe {
+            n: k,
             time: samples[i].time,
-            start: samples[r.0].time,
-            end: t_end(r.1),
+            start: starts[k],
+            end: starts
+                .get(k + 1)
+                .copied()
+                .unwrap_or(duration.max(samples[i].time)),
             content: samples[i].content,
             hash: samples[i].hash,
         })
         .collect()
+}
+
+/// 内容大幅减少的起点：其后 `confirm_samples`+1 个采样的有效内容都低于前 `pre` 个采样峰值的
+/// `drop_ratio` 倍。同一次擦除只记一次（距上次事件不足 `pre` 个采样的忽略）。
+fn drop_events(samples: &[Sample], cfg: &KeyframeConfig, pre: usize) -> Vec<usize> {
+    let n = samples.len();
+    let mut out: Vec<usize> = Vec::new();
+    for i in 1..n {
+        if out.last().is_some_and(|&l| i < l + pre) {
+            continue;
+        }
+        let peak = samples[i.saturating_sub(pre)..i]
+            .iter()
+            .map(|s| s.content)
+            .fold(0.0f32, f32::max);
+        if peak <= 0.0 {
+            continue;
+        }
+        let end = (i + 1 + cfg.confirm_samples).min(n);
+        if samples[i..end]
+            .iter()
+            .all(|s| s.content < cfg.drop_ratio * peak)
+        {
+            out.push(i);
+        }
+    }
+    out
 }
 
 /// 选帧结果缓存（`<cache>/keyframes.json`），参数变化即重算。
@@ -699,5 +807,52 @@ mod tests {
         };
         assert!(is_sparse(Some(&fake), 60.0, &cfg));
         assert!(is_sparse(None, 60.0, &cfg));
+    }
+
+    #[test]
+    fn end_of_video_frame_is_mandatory() {
+        // 整段无切换：内容在 10 秒达到最多后被手挡住一部分，结尾 30–40 秒画面稳定。
+        let samples: Vec<Sample> = (0..21)
+            .map(|k| {
+                let t = k as f64 * 2.0;
+                s(t, A, if k == 5 { 0.9 } else { 0.5 })
+            })
+            .collect();
+        let cfg = KeyframeConfig {
+            min_frames: 1,
+            max_per_hour: 1.0,
+            ..cfg0()
+        };
+        let got = select(&samples, 42.0, &cfg, &[], &none);
+        let last = got.last().unwrap();
+        assert!(last.time >= 42.0 - cfg.mandatory_pre_secs, "{got:?}");
+        assert_eq!(last.end, 42.0);
+        assert_eq!(got[0].start, 0.0);
+        for w in got.windows(2) {
+            assert_eq!(w[0].end, w[1].start, "区间首尾相接");
+        }
+    }
+
+    #[test]
+    fn frame_before_erase_is_mandatory_even_over_cap() {
+        // 0–24 秒逐渐写满（同一块板，哈希几乎不变），26 秒起擦掉；名额只有 1 张。
+        let samples: Vec<Sample> = (0..20)
+            .map(|k| {
+                let t = k as f64 * 2.0;
+                let c = if k <= 12 { 0.1 + 0.06 * k as f32 } else { 0.15 };
+                s(t, if k <= 12 { A } else { A2 }, c)
+            })
+            .collect();
+        let cfg = KeyframeConfig {
+            min_frames: 0,
+            max_per_hour: 1.0,
+            ..cfg0()
+        };
+        let got = select(&samples, 40.0, &cfg, &[], &none);
+        assert!(
+            got.iter().any(|k| (k.time - 24.0).abs() < 1e-9),
+            "擦板前写满的 24 秒必须选中：{got:?}"
+        );
+        assert_eq!(drop_events(&samples, &cfg, 4), vec![13]);
     }
 }
