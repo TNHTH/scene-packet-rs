@@ -470,7 +470,9 @@ pub async fn sample_video(
 /// rawvideo 字节 → 采样帧；第 k 帧时间为 k×interval（ffmpeg fps 滤镜从 0 开始）。
 pub fn samples_from_raw(bytes: &[u8], interval_secs: f64) -> Vec<Sample> {
     bytes
-        .chunks_exact(SAMPLE_W * SAMPLE_H)
+        .as_chunks::<{ SAMPLE_W * SAMPLE_H }>()
+        .0
+        .iter()
         .enumerate()
         .map(|(k, px)| Sample {
             time: k as f64 * interval_secs,
