@@ -58,7 +58,7 @@ pub fn parse_vtt(content: &str, language: &str) -> Transcript {
                         start: s,
                         end: end.unwrap_or(s),
                         text,
-                        suspect: false,
+                        suspect: None,
                     });
                 }
             }
@@ -128,7 +128,7 @@ pub fn parse_srt(content: &str, language: &str) -> Transcript {
                     start,
                     end,
                     text,
-                    suspect: false,
+                    suspect: None,
                 });
             }
         }

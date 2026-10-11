@@ -46,10 +46,20 @@ pub struct TranscriptSegment {
     pub start: f64,
     pub end: f64,
     pub text: String,
-    /// ASR 后处理标记的疑似幻觉（时长与字数明显不匹配，见 `asr::postprocess`）。
-    /// 为 false 时不序列化，旧缓存 / 字幕 JSON 不受影响。
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub suspect: bool,
+    /// ASR 后处理标记的疑似幻觉及原因（见 `asr::postprocess`）。原文保留不删；
+    /// compact / 索引默认不放这些句，full 照样返回。为 None 时不序列化，旧缓存不受影响。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspect: Option<SuspectReason>,
+}
+
+/// 疑似幻觉的原因。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SuspectReason {
+    /// 与上一句（规范化后）文本相同的连续重复。
+    Repeat,
+    /// 时长与字数明显不匹配。
+    DurationMismatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -60,6 +70,17 @@ pub struct Transcript {
 }
 
 impl Transcript {
+    /// 去掉疑似幻觉句后的正文（compact / 内联文本用）。
+    pub fn clean_text(&self) -> String {
+        self.segments
+            .iter()
+            .filter(|s| s.suspect.is_none())
+            .map(|s| s.text.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn full_text(&self) -> String {
         self.segments
             .iter()
@@ -109,7 +130,7 @@ pub const TRANSCRIPT_INLINE_LIMIT: usize = 12000;
 pub const TRANSCRIPT_PREVIEW_LIMIT: usize = 3000;
 
 pub fn format_inline_text(transcript: &Transcript, truncated: bool) -> String {
-    let text = transcript.full_text();
+    let text = transcript.clean_text();
     if truncated && text.len() > TRANSCRIPT_PREVIEW_LIMIT {
         format!(
             "{}\n\n...(内容已截断，请读取 transcript_path 获取全文后再总结)",

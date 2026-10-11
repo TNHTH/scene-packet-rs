@@ -46,6 +46,8 @@ pub struct IndexedSegment {
     pub start: f64,
     pub end: f64,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspect: Option<avr_core::models::SuspectReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,7 +99,8 @@ fn summarize(text: &str) -> String {
 pub fn sections(result: &AnalyzeResult) -> Vec<Section> {
     let segs = segments(result);
     let mut out: Vec<Section> = Vec::new();
-    for (i, seg) in segs.iter().enumerate() {
+    // 疑似幻觉句不进索引（原文仍可经 read_transcript / full 取回）。
+    for (i, seg) in segs.iter().enumerate().filter(|(_, s)| s.suspect.is_none()) {
         let open = out.last().filter(|s| {
             s.segment_count < SECTION_MAX_SEGMENTS && seg.end - s.start <= SECTION_MAX_SECS
         });
@@ -246,6 +249,7 @@ pub fn read_transcript(
             start: seg.start,
             end: seg.end,
             text: seg.text.clone(),
+            suspect: seg.suspect,
         });
     }
     Ok(TranscriptPage {
@@ -269,5 +273,29 @@ mod tests {
         assert!(parse_frame_uri("avr://job/..%2F/frame/1").is_err());
         assert!(parse_frame_uri("http://x").is_err());
         assert!(parse_frame_uri("avr://job/k/frame/x").is_err());
+    }
+
+    #[test]
+    fn suspects_skipped_in_index_but_readable() {
+        use avr_core::models::SuspectReason;
+        let mut r = crate::payload::tests::sample("真话");
+        let t = r.transcript.as_mut().unwrap();
+        let mut dup = t.segments[0].clone();
+        dup.start = 1.0;
+        dup.end = 2.0;
+        dup.suspect = Some(SuspectReason::Repeat);
+        t.segments.push(dup);
+        let secs = sections(&r);
+        assert_eq!(secs.len(), 1);
+        assert_eq!(secs[0].segment_count, 1);
+        assert_eq!(secs[0].end, 1.0);
+        let page = read_transcript(&r, 0.0, 10.0, None, 4000).unwrap();
+        assert_eq!(page.segments.len(), 2, "原文仍可取回");
+        assert_eq!(page.segments[1].suspect, Some(SuspectReason::Repeat));
+        let c = crate::payload::compact_mcp_payload(&r, 3000);
+        assert_eq!(c["text"], "真话");
+        assert_eq!(c["sample_segments"].as_array().unwrap().len(), 1);
+        let f = crate::payload::full_mcp_payload(&r);
+        assert_eq!(f["segments"][1]["suspect"], "repeat");
     }
 }

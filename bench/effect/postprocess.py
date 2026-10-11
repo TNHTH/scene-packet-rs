@@ -12,18 +12,22 @@ def stats(segs):
     n = len(segs); dup = sum(1 for a, b in zip(segs, segs[1:]) if norm(a["text"]) and norm(a["text"]) == norm(b["text"]))
     return n, dup
 def pp(segs):
-    out = []
+    """不删内容：只打 suspect = repeat / duration_mismatch。"""
+    out, prev = [], ""
     for s in segs:
-        if out and norm(s["text"]) and norm(s["text"]) == norm(out[-1]["text"]):
-            out[-1]["start"] = min(out[-1]["start"], s["start"]); out[-1]["end"] = max(out[-1]["end"], s["end"]); continue
-        out.append(dict(s))
-    for s in out:
-        d = s["end"] - s["start"]
-        if d >= MIN_SECS and units(s["text"]) / d < MAX_UPS: s["suspect"] = True
+        s = dict(s); k = norm(s["text"]); d = s["end"] - s["start"]
+        s.pop("suspect", None)
+        if k and k == prev: s["suspect"] = "repeat"
+        elif d >= MIN_SECS and units(s["text"]) / d < MAX_UPS: s["suspect"] = "duration_mismatch"
+        prev = k; out.append(s)
     return out
 if __name__ == "__main__":
     d = json.load(open(sys.argv[1])); before = stats(d["segments"])
     d["segments"] = pp(d["segments"]); d.setdefault("_meta", {})["postprocess"] = "P4-3"
     json.dump(d, open(sys.argv[2], "w"), ensure_ascii=False, indent=1)
     n, dup = before; sus = sum(1 for s in d["segments"] if s.get("suspect"))
-    print(f"before: {n} 句, 与上一句重复 {dup} ({dup/max(n,1):.0%}); after: {len(d['segments'])} 句, suspect {sus}")
+    import collections
+    c = collections.Counter(s.get("suspect") for s in d["segments"])
+    print(f"{n} 句；repeat {c['repeat']} ({c['repeat']/max(n,1):.0%})；duration_mismatch {c['duration_mismatch']}；索引可见 {c[None]} 句")
+    for s in d["segments"]:
+        if s.get("suspect"): print(f"  {s['start']:7.1f}-{s['end']:7.1f} {s['suspect']:17s} {s['text']}")

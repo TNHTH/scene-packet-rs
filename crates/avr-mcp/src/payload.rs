@@ -6,7 +6,14 @@ use avr_core::models::{format_inline_text, truncate_utf8, AnalyzeResult, Transcr
 pub fn compact_mcp_payload(result: &AnalyzeResult, max_inline: usize) -> serde_json::Value {
     let trans = result.transcript.as_ref();
     let sample = trans
-        .map(|t| t.segments.iter().take(5).cloned().collect::<Vec<_>>())
+        .map(|t| {
+            t.segments
+                .iter()
+                .filter(|s| s.suspect.is_none())
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let text = trans
         .map(|t| format_inline_text(t, result.truncated))
@@ -79,7 +86,7 @@ pub(crate) mod tests {
                     start: 0.0,
                     end: 1.0,
                     text: text.into(),
-                    suspect: false,
+                    suspect: None,
                 }],
             }),
             transcript_path: "p".into(),

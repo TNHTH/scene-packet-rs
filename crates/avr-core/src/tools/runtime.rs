@@ -190,7 +190,7 @@ pub mod fake {
                 start: 0.0,
                 end: 1.5,
                 text: "你好世界".into(),
-                suspect: false,
+                suspect: None,
             }],
         }
     }

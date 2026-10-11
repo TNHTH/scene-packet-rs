@@ -101,7 +101,7 @@ pub fn fixed_transcript() -> Transcript {
                 start: (i as f64 * step * 100.0).round() / 100.0,
                 end: ((i + 1) as f64 * step * 100.0).round() / 100.0,
                 text: format!("第{}句：{}", i + 1, LINES[i % LINES.len()]),
-                suspect: false,
+                suspect: None,
             })
             .collect(),
     }
