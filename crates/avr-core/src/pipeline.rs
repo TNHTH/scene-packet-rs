@@ -367,7 +367,11 @@ fn asr_fingerprint(ctx: &PipelineContext, deps: &Deps) -> AsrFingerprint {
         crate::tools::registry::ToolRegistry::new(&ctx.root, &ctx.config).whisper_model_path();
     AsrFingerprint {
         model: crate::fingerprint::content_fingerprint(&model_path).unwrap_or_default(),
-        version: deps.tools.version(ctx, ToolId::Whisper).unwrap_or_default(),
+        version: format!(
+            "{}|args{}",
+            deps.tools.version(ctx, ToolId::Whisper).unwrap_or_default(),
+            crate::asr::presets::ARGS_REV
+        ),
     }
 }
 
@@ -595,7 +599,10 @@ mod tests {
             .unwrap()
             .unwrap()
             .2;
-        assert_eq!(meta.asr_version, "v2");
+        assert_eq!(
+            meta.asr_version,
+            format!("v2|args{}", crate::asr::presets::ARGS_REV)
+        );
         assert_eq!(meta.cache_schema, CACHE_SCHEMA);
     }
 
