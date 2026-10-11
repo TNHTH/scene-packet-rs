@@ -61,4 +61,24 @@ mod tests {
         // 仅验证函数可调用；不修改真实 APPDATA
         let _ = avr_core::root::needs_first_run_setup(None);
     }
+
+    #[test]
+    fn file_uri_roundtrips_encoded_path() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("中文 a.txt");
+        std::fs::write(&p, b"x").unwrap();
+        let uri = avr_core::paths::to_file_uri(&p);
+        assert_eq!(
+            url::Url::parse(&uri)
+                .unwrap()
+                .to_file_path()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            p.canonicalize().unwrap()
+        );
+        assert!(!uri.starts_with("file:////"));
+        assert!(uri.contains("%20"));
+        assert!(!uri.contains("中文"));
+    }
 }

@@ -7,11 +7,7 @@ ScenePacket 从本地文件、B 站和抖音视频中提取带时间轴的字幕
 
 产品副标题：**Turn video into agent-ready context.**
 
-当前可执行文件仍叫 `avr.exe`，以兼容已有脚本和 MCP 配置；后续可在独立版本中提供
-`scenepacket.exe` 别名。
-
-建议 GitHub 仓库 slug 使用 `scene-packet-rs`。当前远端地址仍为
-`TNHTH/ai-video-reader-rs`，远端仓库重命名与 remote URL 同步需单独执行。
+当前可执行文件仍叫 `avr.exe`，以兼容已有脚本和 MCP 配置；后续可在独立版本中提供 `scenepacket.exe` 别名。
 
 ## 体积说明
 
