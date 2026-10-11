@@ -28,7 +28,7 @@ fn run_transcribe_inner(path: &str) -> Result<String, AvrError> {
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .map_err(|e| AvrError::io(e, "无法创建 tokio 运行时"))?
         .block_on(avr_core::pipeline::analyze(
             &ctx,
             &avr_core::pipeline::Source::Local(path.into()),
@@ -61,7 +61,7 @@ fn run_analyze_inner(url: &str) -> Result<String, AvrError> {
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .map_err(|e| AvrError::io(e, "无法创建 tokio 运行时"))?
         .block_on(avr_core::pipeline::analyze(
             &ctx,
             &avr_core::pipeline::Source::Url(url.to_string()),
