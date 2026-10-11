@@ -1,14 +1,17 @@
 //! Tauri GUI。
 
-use avr_core::config::{load_config, save_config, AppConfig};
+use crate::error::{CommandError, CommandResult};
+use crate::mcp::compact_mcp_payload;
+use crate::state::{AppState, SharedState};
+use avr_core::config::{save_config, AppConfig};
 use avr_core::jobs::JobProgress;
-use avr_core::pipeline::{analyze_url, compact_mcp_payload, transcribe_local};
-use avr_core::root::{needs_first_run_setup, resolve_data_root, set_root_pointer, DataRoot};
+use avr_core::pipeline::{analyze, AnalyzeOptions, Source};
+use avr_core::root::{needs_first_run_setup, set_root_pointer, DataRoot};
 use avr_core::tools::install::download_and_install;
 use avr_core::tools::manifest::{builtin_licenses, builtin_manifests};
 use avr_core::tools::registry::ToolRegistry;
+use avr_core::tools::ToolId;
 use serde::Serialize;
-use crate::state::SharedState;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
@@ -30,17 +33,7 @@ struct LicenseDto {
 }
 
 pub fn run_gui() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_dir = exe.parent();
-
-    let root = resolve_data_root(exe_dir).map_err(|e| e.format_user())?;
-    root.ensure_layout().map_err(|e| e.format_user())?;
-    let config = load_config(&root).map_err(|e| e.format_user())?;
-
-    let state: SharedState = Arc::new(crate::state::AppState {
-        root: parking_lot::Mutex::new(root),
-        config: parking_lot::Mutex::new(config),
-    });
+    let state: SharedState = Arc::new(AppState::load().map_err(|e| e.format_user())?);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tauri::Builder::default()
@@ -97,12 +90,12 @@ fn get_data_root(state: State<SharedState>) -> String {
 }
 
 #[tauri::command]
-fn set_data_root(path: String, state: State<SharedState>) -> Result<String, String> {
+fn set_data_root(path: String, state: State<SharedState>) -> CommandResult<String> {
     let new_root = DataRoot {
         path: PathBuf::from(path),
     };
-    new_root.ensure_layout().map_err(|e| e.format_user())?;
-    set_root_pointer(&new_root.path).map_err(|e| e.format_user())?;
+    new_root.ensure_layout()?;
+    set_root_pointer(&new_root.path)?;
     let display = new_root.path.display().to_string();
     *state.root.lock() = new_root;
     Ok(display)
@@ -114,9 +107,13 @@ fn get_config(state: State<SharedState>) -> AppConfig {
 }
 
 #[tauri::command]
-fn save_app_config(cfg: AppConfig, app: tauri::AppHandle, state: State<SharedState>) -> Result<(), String> {
+fn save_app_config(
+    cfg: AppConfig,
+    app: tauri::AppHandle,
+    state: State<SharedState>,
+) -> CommandResult<()> {
     let enable_mica = cfg.ui.enable_transparency;
-    save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
+    save_config(&state.root.lock(), &cfg)?;
     *state.config.lock() = cfg;
     #[cfg(windows)]
     if enable_mica {
@@ -131,15 +128,15 @@ fn save_app_config(cfg: AppConfig, app: tauri::AppHandle, state: State<SharedSta
 #[tauri::command]
 fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
     let cfg = state.config.lock().clone();
-    let reg = ToolRegistry::new(&*state.root.lock(), &cfg);
+    let reg = ToolRegistry::new(&state.root.lock(), &cfg);
     let manifests = builtin_manifests();
-    ["ffmpeg", "ffprobe", "yt-dlp", "whisper"]
-        .iter()
+    ToolId::ALL
+        .into_iter()
         .map(|id| {
             let st = reg.tool_status(id);
             let url = manifests
                 .iter()
-                .find(|m| *id == "whisper" && m.id.starts_with("whisper") || m.id == *id)
+                .find(|m| id.matches_manifest(&m.id))
                 .map(|m| m.url.clone());
             ToolStatusDto {
                 id: id.to_string(),
@@ -153,32 +150,28 @@ fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
 }
 
 #[tauri::command]
-fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> Result<(), String> {
+fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> CommandResult<()> {
     let mut cfg = state.config.lock().clone();
-    match tool_id.as_str() {
-        "ffmpeg" => cfg.tools.ffmpeg_path = path,
-        "ffprobe" => cfg.tools.ffprobe_path = path,
-        "yt-dlp" => cfg.tools.ytdlp_path = path,
-        "whisper" => cfg.tools.whisper_cli_path = path,
-        _ => return Err("未知工具".into()),
+    match ToolId::parse(&tool_id).ok_or_else(|| CommandError::invalid_argument("未知工具"))? {
+        ToolId::Ffmpeg => cfg.tools.ffmpeg_path = path,
+        ToolId::Ffprobe => cfg.tools.ffprobe_path = path,
+        ToolId::YtDlp => cfg.tools.ytdlp_path = path,
+        ToolId::Whisper => cfg.tools.whisper_cli_path = path,
     }
-    save_config(&state.root.lock(), &cfg).map_err(|e| e.format_user())?;
+    save_config(&state.root.lock(), &cfg)?;
     *state.config.lock() = cfg;
     Ok(())
 }
 
 #[tauri::command]
-async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> Result<String, String> {
+async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> CommandResult<String> {
+    let id = ToolId::parse(&tool_id).ok_or_else(|| CommandError::invalid_argument("未知工具"))?;
     let manifest = builtin_manifests()
         .into_iter()
-        .find(|m| {
-            tool_id == "whisper" && m.id.starts_with("whisper") || m.id == tool_id
-        })
-        .ok_or_else(|| "未找到安装清单".to_string())?;
+        .find(|m| id.matches_manifest(&m.id))
+        .ok_or_else(|| CommandError::invalid_argument("未找到安装清单"))?;
     let root_path = state.root.lock().path.clone();
-    download_and_install(&manifest, &root_path)
-        .await
-        .map_err(|e| e.format_user())?;
+    download_and_install(&manifest, &root_path).await?;
     Ok(format!("已安装 {}", tool_id))
 }
 
@@ -201,14 +194,24 @@ async fn start_transcribe(
     state: State<'_, SharedState>,
 ) -> Result<String, String> {
     let ctx = state.pipeline_ctx();
+    let deps = state.deps().clone();
     let app_handle = app.clone();
     tokio::spawn(async move {
-        let _ = app_handle.emit("job-progress", JobProgress::Stage {
-            media_key: path.clone(),
-            stage: "starting".into(),
-            percent: 0,
-        });
-        let result = transcribe_local(&ctx, PathBuf::from(&path).as_path()).await;
+        let _ = app_handle.emit(
+            "job-progress",
+            JobProgress::Stage {
+                media_key: path.clone(),
+                stage: "starting".into(),
+                percent: 0,
+            },
+        );
+        let result = analyze(
+            &ctx,
+            &Source::Local(PathBuf::from(&path)),
+            &AnalyzeOptions::default(),
+            &deps,
+        )
+        .await;
         match result {
             Ok(r) => {
                 let json = compact_mcp_payload(&r, 3000);
@@ -229,9 +232,10 @@ async fn start_analyze(
     state: State<'_, SharedState>,
 ) -> Result<String, String> {
     let ctx = state.pipeline_ctx();
+    let deps = state.deps().clone();
     let app_handle = app.clone();
     tokio::spawn(async move {
-        let result = analyze_url(&ctx, &url).await;
+        let result = analyze(&ctx, &Source::Url(url), &AnalyzeOptions::default(), &deps).await;
         match result {
             Ok(r) => {
                 let json = compact_mcp_payload(&r, 3000);

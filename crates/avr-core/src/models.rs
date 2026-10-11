@@ -17,6 +17,8 @@ pub struct VideoInfo {
 pub enum Platform {
     Bilibili,
     Douyin,
+    /// 本地媒体文件（非在线平台）。
+    Local,
 }
 
 impl Platform {
@@ -24,6 +26,17 @@ impl Platform {
         match self {
             Self::Bilibili => "bilibili",
             Self::Douyin => "douyin",
+            Self::Local => "local",
+        }
+    }
+
+    /// 从缓存元数据中的字符串还原；未知值返回 None，由调用方决定兜底。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "bilibili" => Some(Self::Bilibili),
+            "douyin" => Some(Self::Douyin),
+            "local" => Some(Self::Local),
+            _ => None,
         }
     }
 }
@@ -33,6 +46,20 @@ pub struct TranscriptSegment {
     pub start: f64,
     pub end: f64,
     pub text: String,
+    /// ASR 后处理标记的疑似幻觉及原因（见 `asr::postprocess`）。原文保留不删；
+    /// compact / 索引默认不放这些句，full 照样返回。为 None 时不序列化，旧缓存不受影响。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspect: Option<SuspectReason>,
+}
+
+/// 疑似幻觉的原因。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SuspectReason {
+    /// 与上一句（规范化后）文本相同的连续重复。
+    Repeat,
+    /// 时长与字数明显不匹配。
+    DurationMismatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,6 +70,17 @@ pub struct Transcript {
 }
 
 impl Transcript {
+    /// 去掉疑似幻觉句后的正文（compact / 内联文本用）。
+    pub fn clean_text(&self) -> String {
+        self.segments
+            .iter()
+            .filter(|s| s.suspect.is_none())
+            .map(|s| s.text.trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn full_text(&self) -> String {
         self.segments
             .iter()
@@ -62,9 +100,15 @@ pub enum TranscriptSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
+    /// 缓存格式版本，见 `cache::CACHE_SCHEMA`；旧缓存缺省为 0（视为未命中）。
+    #[serde(default)]
+    pub cache_schema: u32,
     pub app_version: String,
     pub asr_provider: Option<String>,
     pub asr_model: String,
+    /// 生成转写时 ASR 引擎的版本指纹；字幕来源为空。
+    #[serde(default)]
+    pub asr_version: String,
     pub video_id: String,
     pub platform: String,
     pub source: String,
@@ -86,7 +130,7 @@ pub const TRANSCRIPT_INLINE_LIMIT: usize = 12000;
 pub const TRANSCRIPT_PREVIEW_LIMIT: usize = 3000;
 
 pub fn format_inline_text(transcript: &Transcript, truncated: bool) -> String {
-    let text = transcript.full_text();
+    let text = transcript.clean_text();
     if truncated && text.len() > TRANSCRIPT_PREVIEW_LIMIT {
         format!(
             "{}\n\n...(内容已截断，请读取 transcript_path 获取全文后再总结)",
@@ -106,4 +150,19 @@ pub fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Platform;
+
+    #[test]
+    fn platform_str_roundtrip_includes_local() {
+        for p in [Platform::Bilibili, Platform::Douyin, Platform::Local] {
+            assert_eq!(Platform::parse(p.as_str()), Some(p));
+            let json = serde_json::to_string(&p).unwrap();
+            assert_eq!(json, format!("\"{}\"", p.as_str()));
+        }
+        assert_eq!(Platform::parse("youtube"), None);
+    }
 }

@@ -1,6 +1,9 @@
 //! 媒体来源与 media_key 规则。
 
 use std::fs::File;
+use std::sync::LazyLock;
+
+use regex::Regex;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -84,21 +87,70 @@ pub fn platform_media_id(url: &str) -> Option<String> {
     None
 }
 
+static BV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"bv[0-9a-z]+").expect("valid regex"));
+static DOUYIN_VIDEO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/video/(\d+)").expect("valid regex"));
+static DOUYIN_MODAL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"modal_id=(\d+)").expect("valid regex"));
+
 fn regex_bv(s: &str) -> Option<String> {
-    use regex::Regex;
-    let re = Regex::new(r"bv[0-9a-z]+").unwrap();
-    re.find(s).map(|m| m.as_str().to_uppercase())
+    BV_RE.find(s).map(|m| m.as_str().to_uppercase())
 }
 
 fn regex_douyin_id(s: &str) -> Option<String> {
-    use regex::Regex;
-    let re = Regex::new(r"/video/(\d+)").unwrap();
-    if let Some(cap) = re.captures(s) {
+    if let Some(cap) = DOUYIN_VIDEO_RE.captures(s) {
         return cap.get(1).map(|m| m.as_str().to_string());
     }
-    let re2 = Regex::new(r"modal_id=(\d+)").unwrap();
-    re2.captures(s)
+    DOUYIN_MODAL_RE
+        .captures(s)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+}
+
+/// 经过白名单校验的 media_key，可安全地作为缓存目录名拼接路径。
+///
+/// 规则：1..=128 个字符，只含 ASCII 字母数字与 `-` `_` `.`，且不能以 `.` 开头
+///（排除 `.`、`..` 与隐藏目录）。所有用 media_key 拼缓存路径的地方只接受这个类型。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MediaKey(String);
+
+impl MediaKey {
+    pub const MAX_LEN: usize = 128;
+
+    pub fn parse(raw: &str) -> Result<Self, AvrError> {
+        let ok = !raw.is_empty()
+            && raw.len() <= Self::MAX_LEN
+            && !raw.starts_with('.')
+            && raw
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if ok {
+            Ok(Self(raw.to_string()))
+        } else {
+            Err(AvrError::new(
+                crate::error::ErrorCode::CacheError,
+                "media_key 非法",
+                "使用 analyze 返回的 media_key。",
+            ))
+        }
+    }
+
+    /// 仅用于显示 / 日志 / JSON 输出；拼路径请用 [`MediaKey::dir`]。
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for MediaKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl MediaKey {
+    /// 该媒体在缓存根 `cache_root` 下的目录。全仓库拼缓存子目录只走这里。
+    pub fn dir(&self, cache_root: &Path) -> PathBuf {
+        cache_root.join(&self.0)
+    }
 }
 
 /// 计算 media_key（缓存目录名）。
@@ -139,12 +191,41 @@ pub fn to_model_platform(p: Platform) -> ModelPlatform {
 }
 
 fn io_to_avr(e: std::io::Error) -> AvrError {
-    AvrError::new(crate::error::ErrorCode::IoError, e.to_string(), "读取文件元数据失败。")
+    AvrError::new(
+        crate::error::ErrorCode::IoError,
+        e.to_string(),
+        "读取文件元数据失败。",
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_key_rejects_traversal() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../etc",
+            "..\\x",
+            "a/b",
+            "a\\b",
+            "/etc/passwd",
+            "C:\\x",
+            ".hidden",
+            "a b",
+            "键",
+            "a\0b",
+        ] {
+            assert!(MediaKey::parse(bad).is_err(), "{bad:?} 应被拒绝");
+        }
+        assert!(MediaKey::parse(&"a".repeat(129)).is_err());
+        for good in ["local-0123abcd", "bilibili-BV1xx-00ff", "url-ab.cd_ef"] {
+            assert_eq!(MediaKey::parse(good).unwrap().as_str(), good);
+        }
+    }
 
     #[test]
     fn url_with_utm_same_key() {

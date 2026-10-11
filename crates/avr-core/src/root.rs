@@ -67,7 +67,7 @@ impl DataRoot {
             fs::write(
                 &meta_path,
                 serde_json::to_string_pretty(&meta).map_err(|e| {
-                    AvrError::new(ErrorCode::IoError, e.to_string(), "序列化失败。")
+                    AvrError::new(ErrorCode::IoError, "序列化失败", "检查磁盘权限。").with_source(e)
                 })?,
             )
             .map_err(io_err)?;
@@ -77,7 +77,7 @@ impl DataRoot {
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限与路径。")
+    AvrError::io(e, "检查磁盘权限与路径。")
 }
 
 /// 定位数据根：AVR_DATA_ROOT > avr.portable > %APPDATA%/root.txt
@@ -92,7 +92,9 @@ pub fn resolve_data_root(exe_dir: Option<&Path>) -> Result<DataRoot, AvrError> {
         let portable = dir.join(PORTABLE_MARKER);
         if portable.exists() {
             info!("便携模式: {}", dir.display());
-            return Ok(DataRoot { path: dir.to_path_buf() });
+            return Ok(DataRoot {
+                path: dir.to_path_buf(),
+            });
         }
     }
 
@@ -128,7 +130,9 @@ pub fn needs_first_run_setup(exe_dir: Option<&Path>) -> bool {
 /// 写入 root.txt 指针（事务：先 .tmp 再 rename）。
 pub fn set_root_pointer(target: &Path) -> Result<(), AvrError> {
     let pointer = root_pointer_path();
-    fs::create_dir_all(pointer.parent().unwrap()).map_err(io_err)?;
+    if let Some(parent) = pointer.parent() {
+        fs::create_dir_all(parent).map_err(io_err)?;
+    }
     let tmp = pointer.with_extension("txt.tmp");
     fs::write(&tmp, target.display().to_string()).map_err(io_err)?;
     fs::rename(&tmp, &pointer).map_err(io_err)?;

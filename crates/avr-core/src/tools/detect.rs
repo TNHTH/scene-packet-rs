@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::error::{process_failed, AvrError};
-use crate::process::{ProcessRequest, run_blocking};
+use crate::process::{run_blocking, ProcessRequest};
 
 pub fn detect_version(program: &Path) -> Result<String, AvrError> {
     let req = ProcessRequest {

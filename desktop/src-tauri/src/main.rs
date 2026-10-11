@@ -4,6 +4,7 @@
 
 mod cli;
 mod console;
+mod error;
 mod gui;
 mod mcp;
 mod state;
@@ -25,13 +26,9 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     /// 转写本地音视频文件
-    Transcribe {
-        path: String,
-    },
+    Transcribe { path: String },
     /// 分析 B站/抖音 URL
-    Analyze {
-        url: String,
-    },
+    Analyze { url: String },
     /// 打印 MCP 配置 JSON
     McpConfig,
     /// 显示数据根与工具状态
@@ -39,8 +36,7 @@ enum Commands {
 }
 
 fn main() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

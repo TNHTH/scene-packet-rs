@@ -16,14 +16,14 @@ static BILI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"bilibili\.com/bangumi/",
     ]
     .iter()
-    .map(|p| Regex::new(p).unwrap())
+    .map(|p| Regex::new(p).expect("valid regex"))
     .collect()
 });
 
 static DOUYIN_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [r"douyin\.com", r"v\.douyin\.com", r"iesdouyin\.com"]
         .iter()
-        .map(|p| Regex::new(p).unwrap())
+        .map(|p| Regex::new(p).expect("valid regex"))
         .collect()
 });
 
@@ -63,7 +63,10 @@ mod tests {
             detect_platform("https://www.bilibili.com/video/BV1xx"),
             Some(Platform::Bilibili)
         );
-        assert_eq!(detect_platform("https://b23.tv/abc"), Some(Platform::Bilibili));
+        assert_eq!(
+            detect_platform("https://b23.tv/abc"),
+            Some(Platform::Bilibili)
+        );
     }
 
     #[test]

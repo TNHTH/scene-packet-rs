@@ -8,11 +8,12 @@ use std::sync::LazyLock;
 use crate::models::{Transcript, TranscriptSegment, TranscriptSource};
 
 static VTT_TIME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})").unwrap()
+    Regex::new(r"(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})")
+        .expect("valid regex")
 });
 
 static SRT_TIME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})").unwrap()
+    Regex::new(r"(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})").expect("valid regex")
 });
 
 const ZH_LANG_PRIORITY: [&str; 4] = ["zh-Hans", "zh-CN", "zh", "ai-zh"];
@@ -57,6 +58,7 @@ pub fn parse_vtt(content: &str, language: &str) -> Transcript {
                         start: s,
                         end: end.unwrap_or(s),
                         text,
+                        suspect: None,
                     });
                 }
             }
@@ -81,8 +83,8 @@ pub fn parse_vtt(content: &str, language: &str) -> Transcript {
                 &mut segments,
                 &mut seen,
             );
-            current_start = Some(parse_ts(m.get(1).unwrap().as_str()));
-            current_end = Some(parse_ts(m.get(2).unwrap().as_str()));
+            current_start = Some(parse_ts(&m[1]));
+            current_end = Some(parse_ts(&m[2]));
             continue;
         }
         if line.chars().all(|c| c.is_ascii_digit()) {
@@ -118,14 +120,15 @@ pub fn parse_srt(content: &str, language: &str) -> Transcript {
             (lines[0], &lines[1..])
         };
         if let Some(m) = SRT_TIME.captures(time_line) {
-            let start = parse_srt_ts(m.get(1).unwrap().as_str());
-            let end = parse_srt_ts(m.get(2).unwrap().as_str());
+            let start = parse_srt_ts(&m[1]);
+            let end = parse_srt_ts(&m[2]);
             let text = text_lines.join(" ").trim().to_string();
             if !text.is_empty() {
                 segments.push(TranscriptSegment {
                     start,
                     end,
                     text,
+                    suspect: None,
                 });
             }
         }
@@ -153,9 +156,11 @@ pub fn segments_to_srt(transcript: &Transcript) -> String {
     lines.join("\n")
 }
 
+static HTML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").expect("valid regex"));
+
 fn strip_tags(s: &str) -> String {
-    let re = Regex::new(r"<[^>]+>").unwrap();
-    re.replace_all(s, "")
+    HTML_TAG
+        .replace_all(s, "")
         .replace("&amp;", "&")
         .replace("&gt;", ">")
         .replace("&lt;", "<")
@@ -190,7 +195,10 @@ fn parse_srt_ts(ts: &str) -> f64 {
     let m = parts[1].parse::<f64>().unwrap_or(0.0);
     let rest: Vec<&str> = parts[2].split(',').collect();
     let s = rest[0].parse::<f64>().unwrap_or(0.0);
-    let ms = rest.get(1).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+    let ms = rest
+        .get(1)
+        .and_then(|x| x.parse::<f64>().ok())
+        .unwrap_or(0.0);
     h * 3600.0 + m * 60.0 + s + ms / 1000.0
 }
 
@@ -198,7 +206,7 @@ fn fmt_ts(seconds: f64) -> String {
     let h = (seconds / 3600.0).floor() as u32;
     let m = ((seconds % 3600.0) / 60.0).floor() as u32;
     let s = seconds % 60.0;
-    format!("{:02}:{:02}:{:06.3}", h, m, s).replace('.', ",")
+    format!("{h:02}:{m:02}:{s:06.3}").replace('.', ",")
 }
 
 pub fn format_timestamp(seconds: f64) -> String {
@@ -206,9 +214,9 @@ pub fn format_timestamp(seconds: f64) -> String {
     let m = ((seconds % 3600.0) / 60.0).floor() as u32;
     let s = (seconds % 60.0).floor() as u32;
     if h > 0 {
-        format!("{:02}:{:02}:{:02}", h, m, s)
+        format!("{h:02}:{m:02}:{s:02}")
     } else {
-        format!("{:02}:{:02}", m, s)
+        format!("{m:02}:{s:02}")
     }
 }
 

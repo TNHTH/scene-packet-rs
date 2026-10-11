@@ -1,10 +1,12 @@
 //! 业务错误（1:1 移植 V1 errors.py）。
 
-use std::fmt;
+use std::error::Error as StdError;
+use std::sync::Arc;
 
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ErrorCode {
     UnsupportedUrl,
     ExtractFailed,
@@ -49,11 +51,24 @@ impl ErrorCode {
     }
 }
 
+/// 底层错误，用 Arc 包装以便 `AvrError` 可 Clone（singleflight 需要把结果广播给多个等待者）。
+pub type BoxedSource = Arc<dyn StdError + Send + Sync + 'static>;
+
+/// 核心库错误。
+///
+/// - `code`：稳定的机器可读错误码，入口层据此映射退出码 / JSON / Tauri 错误。
+/// - `message` / `hint`：面向用户的说明与下一步建议。
+/// - `source`：底层原因（io / serde / reqwest / zip 等），通过 `Error::source()` 暴露，
+///   `Display` 不重复输出它，避免错误链打印两遍。
 #[derive(Debug, Error, Clone)]
+#[non_exhaustive]
+#[error("[{}] {}", code.as_str(), message)]
 pub struct AvrError {
     pub code: ErrorCode,
     pub message: String,
     pub hint: String,
+    #[source]
+    source: Option<BoxedSource>,
 }
 
 impl AvrError {
@@ -62,22 +77,34 @@ impl AvrError {
             code,
             message: message.into(),
             hint: hint.into(),
+            source: None,
         }
     }
 
-    pub fn format_user(&self) -> String {
-        format!(
-            "[{}] {}\n下一步: {}",
-            self.code.as_str(),
-            self.message,
-            self.hint
-        )
+    /// 挂上底层原因。
+    pub fn with_source<E>(mut self, source: E) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        self.source = Some(Arc::new(source));
+        self
     }
-}
 
-impl fmt::Display for AvrError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_user())
+    /// I/O 错误的统一构造：保留 `std::io::Error` 作为 source。
+    pub fn io(err: std::io::Error, hint: impl Into<String>) -> Self {
+        Self::new(ErrorCode::IoError, "文件读写失败", hint).with_source(err)
+    }
+
+    /// 面向用户的完整文本：错误码、说明、底层原因（若有）与下一步建议。
+    pub fn format_user(&self) -> String {
+        let mut s = format!("[{}] {}", self.code.as_str(), self.message);
+        let mut cause = StdError::source(self);
+        while let Some(c) = cause {
+            s.push_str(&format!("\n原因: {c}"));
+            cause = c.source();
+        }
+        s.push_str(&format!("\n下一步: {}", self.hint));
+        s
     }
 }
 
@@ -160,4 +187,22 @@ pub fn process_failed(detail: &str) -> AvrError {
         format!("子进程执行失败: {detail}"),
         "查看 logs/ 目录获取详细输出。",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_is_preserved_and_not_duplicated_in_display() {
+        let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "拒绝访问");
+        let e = AvrError::io(io, "检查磁盘权限。");
+        assert_eq!(e.to_string(), "[IO_ERROR] 文件读写失败");
+        let src = StdError::source(&e).expect("source");
+        assert_eq!(src.to_string(), "拒绝访问");
+        let user = e.format_user();
+        assert!(user.contains("原因: 拒绝访问") && user.contains("下一步"));
+        // Clone 后 source 仍在。
+        assert!(StdError::source(&e.clone()).is_some());
+    }
 }

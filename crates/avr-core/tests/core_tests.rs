@@ -4,7 +4,7 @@
 mod tests {
     use avr_core::asr::select_preset;
     use avr_core::extract::platform::{detect_platform, Platform};
-    use avr_core::media::{media_key, MediaSource, normalize_url};
+    use avr_core::media::{media_key, normalize_url, MediaSource};
     use avr_core::timeline::parse_vtt;
 
     #[test]
@@ -60,5 +60,25 @@ mod tests {
     fn test_needs_first_run_no_pointer() {
         // 仅验证函数可调用；不修改真实 APPDATA
         let _ = avr_core::root::needs_first_run_setup(None);
+    }
+
+    #[test]
+    fn file_uri_roundtrips_encoded_path() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("中文 a.txt");
+        std::fs::write(&p, b"x").unwrap();
+        let uri = avr_core::paths::to_file_uri(&p);
+        assert_eq!(
+            url::Url::parse(&uri)
+                .unwrap()
+                .to_file_path()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            p.canonicalize().unwrap()
+        );
+        assert!(!uri.starts_with("file:////"));
+        assert!(uri.contains("%20"));
+        assert!(!uri.contains("中文"));
     }
 }

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::tools::ToolId;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolManifest {
     pub id: String,
@@ -27,7 +29,7 @@ pub enum ArchiveLayout {
 pub fn builtin_manifests() -> Vec<ToolManifest> {
     vec![
         ToolManifest {
-            id: "ffmpeg".into(),
+            id: ToolId::Ffmpeg.as_str().into(),
             version: "essentials".into(),
             url: "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip".into(),
             sha256: String::new(),
@@ -42,7 +44,7 @@ pub fn builtin_manifests() -> Vec<ToolManifest> {
             optional: vec![],
         },
         ToolManifest {
-            id: "yt-dlp".into(),
+            id: ToolId::YtDlp.as_str().into(),
             version: "latest".into(),
             url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe".into(),
             sha256: String::new(),
@@ -96,6 +98,10 @@ pub fn builtin_licenses() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
         ("ffmpeg", "GPLv3", "https://ffmpeg.org/"),
         ("yt-dlp", "Unlicense", "https://github.com/yt-dlp/yt-dlp"),
-        ("whisper.cpp", "MIT", "https://github.com/ggml-org/whisper.cpp"),
+        (
+            "whisper.cpp",
+            "MIT",
+            "https://github.com/ggml-org/whisper.cpp",
+        ),
     ]
 }

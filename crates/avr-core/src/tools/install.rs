@@ -74,7 +74,7 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), AvrError> {
     }
     let data = std::fs::read(path).map_err(io_err)?;
     let hash = Sha256::digest(&data);
-    let got = format!("{:x}", hash);
+    let got = format!("{hash:x}");
     if got != expected.to_lowercase() {
         return Err(AvrError::new(
             ErrorCode::ToolNotReady,
@@ -91,9 +91,7 @@ fn extract_zip_entries(
     entry_names: &[String],
 ) -> Result<(), AvrError> {
     let file = std::fs::File::open(zip_path).map_err(io_err)?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
-        AvrError::new(ErrorCode::ToolNotReady, e.to_string(), "压缩包损坏。")
-    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(zip_err)?;
 
     for want in entry_names {
         let want_base = Path::new(want)
@@ -153,13 +151,13 @@ fn atomic_rename(from: &Path, to: &Path) -> Result<(), AvrError> {
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限。")
+    AvrError::io(e, "检查磁盘权限。")
 }
 
 fn net_err(e: reqwest::Error) -> AvrError {
-    AvrError::new(ErrorCode::NetworkError, e.to_string(), "检查网络连接。")
+    AvrError::new(ErrorCode::NetworkError, "网络请求失败", "检查网络连接。").with_source(e)
 }
 
 fn zip_err(e: zip::result::ZipError) -> AvrError {
-    AvrError::new(ErrorCode::ToolNotReady, e.to_string(), "压缩包损坏。")
+    AvrError::new(ErrorCode::ToolNotReady, "解压失败", "压缩包损坏。").with_source(e)
 }

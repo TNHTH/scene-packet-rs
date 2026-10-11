@@ -1,7 +1,6 @@
 //! 配置读写（TOML）。
 
 use std::fs;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,11 +14,48 @@ pub struct AppConfig {
     #[serde(default)]
     pub asr: AsrConfig,
     #[serde(default)]
+    pub keyframes: crate::keyframes::KeyframeConfig,
+    #[serde(default)]
     pub output: OutputConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// MCP 服务配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// `response_mode=auto` 时，转写原文估算 token 数不超过此值就直接返回 full，否则返回 index。
+    /// 默认 2000（与当前 compact 相当的保守值），**待效果集确定**。
+    #[serde(default = "default_auto_full_max_tokens")]
+    pub auto_full_max_tokens: usize,
+    /// 是否把工具调用日志追加到 `<数据根>/logs/mcp-calls.jsonl`（默认关闭；stderr 总是写）。
+    #[serde(default)]
+    pub call_log: bool,
+    /// 文件日志轮转阈值（字节），超过后改名为 `.1`（覆盖旧 `.1`）。默认 5MB。
+    #[serde(default = "default_call_log_max_bytes")]
+    pub call_log_max_bytes: u64,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            auto_full_max_tokens: default_auto_full_max_tokens(),
+            call_log: false,
+            call_log_max_bytes: default_call_log_max_bytes(),
+        }
+    }
+}
+
+fn default_auto_full_max_tokens() -> usize {
+    2000
+}
+
+fn default_call_log_max_bytes() -> u64 {
+    5 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +87,10 @@ pub struct AsrConfig {
     pub active_preset: String,
     #[serde(default)]
     pub model_path: String,
+    /// language=zh 时传给 whisper 的初始提示词（`--prompt`），默认空 = 不传。
+    /// 风险：实测会改变解码，cns_space 上漏掉整句（CER 0.047→0.244），不建议开启。
+    #[serde(default)]
+    pub zh_initial_prompt: String,
 }
 
 fn default_auto() -> String {
@@ -60,13 +100,13 @@ fn default_whisper_preset() -> String {
     "whisper-cpp-cpu".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OutputConfig {
     #[serde(default)]
     pub cache_dir: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolsConfig {
     #[serde(default)]
     pub ffmpeg_path: String,
@@ -103,17 +143,15 @@ fn default_hint_limit() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            mcp: McpConfig::default(),
             extractor: ExtractorConfig {
                 name: default_ytdlp(),
                 cookies_from_browser: default_none(),
                 cookies_file: String::new(),
                 user_agent: String::new(),
             },
-            asr: AsrConfig {
-                default: default_auto(),
-                active_preset: default_whisper_preset(),
-                model_path: String::new(),
-            },
+            asr: AsrConfig::default(),
+            keyframes: Default::default(),
             output: OutputConfig {
                 cache_dir: String::new(),
             },
@@ -144,24 +182,7 @@ impl Default for AsrConfig {
             default: default_auto(),
             active_preset: default_whisper_preset(),
             model_path: String::new(),
-        }
-    }
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self { cache_dir: String::new() }
-    }
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self {
-            ffmpeg_path: String::new(),
-            ffprobe_path: String::new(),
-            ytdlp_path: String::new(),
-            whisper_cli_path: String::new(),
-            whisper_model_path: String::new(),
+            zh_initial_prompt: String::new(),
         }
     }
 }
@@ -185,7 +206,11 @@ pub fn load_config(root: &DataRoot) -> Result<AppConfig, AvrError> {
     }
     let content = fs::read_to_string(&path).map_err(io_err)?;
     let cfg: AppConfig = toml::from_str(&content).map_err(|e| {
-        AvrError::new(ErrorCode::ConfigError, e.to_string(), "检查 config.toml 格式。")
+        AvrError::new(
+            ErrorCode::ConfigError,
+            e.to_string(),
+            "检查 config.toml 格式。",
+        )
     })?;
     Ok(cfg)
 }
@@ -193,7 +218,7 @@ pub fn load_config(root: &DataRoot) -> Result<AppConfig, AvrError> {
 pub fn save_config(root: &DataRoot, cfg: &AppConfig) -> Result<(), AvrError> {
     root.ensure_layout()?;
     let content = toml::to_string_pretty(cfg).map_err(|e| {
-        AvrError::new(ErrorCode::ConfigError, e.to_string(), "序列化配置失败。")
+        AvrError::new(ErrorCode::ConfigError, "序列化配置失败", "检查配置内容。").with_source(e)
     })?;
     fs::write(root.config_path(), content).map_err(io_err)?;
     Ok(())
@@ -208,7 +233,7 @@ pub fn effective_cache_dir(root: &DataRoot, cfg: &AppConfig) -> std::path::PathB
 }
 
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限。")
+    AvrError::io(e, "检查磁盘权限。")
 }
 
 #[cfg(test)]

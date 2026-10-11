@@ -1,0 +1,4 @@
+[{"video_id":"cns_space","question":"DUMMY: 空间站设计寿命是多少年","answer_start":64,"answer_end":80,"kind":"speech"},
+ {"video_id":"cns_space","question":"DUMMY: 先发射哪个舱","answer_start":22,"answer_end":27,"kind":"speech"},
+ {"video_id":"sintel","question":"DUMMY: what is she searching for?","answer_start":20,"answer_end":25,"kind":"speech"},
+ {"video_id":"sintel","question":"DUMMY: what creature appears on screen?","answer_start":60,"answer_end":65,"kind":"visual"}]

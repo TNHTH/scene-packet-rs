@@ -2,6 +2,7 @@
 name = "avr"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "ScenePacket - 视频上下文包，单 exe 桌面/MCP/CLI"
 
 [[bin]]
@@ -13,6 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 avr-core = { path = "../../crates/avr-core" }
+avr-mcp = { path = "../../crates/avr-mcp" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -25,9 +27,7 @@ clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-rmcp.workspace = true
 parking_lot.workspace = true
-schemars = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

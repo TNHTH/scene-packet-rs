@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::config::AppConfig;
 use crate::error::{asr_failed, no_transcript_asr_not_configured, AvrError};
 use crate::models::TranscriptSegment;
-use crate::process::{ProcessRequest, run};
+use crate::process::{run, ProcessRequest};
 use crate::root::DataRoot;
 use crate::timeline::parse_srt;
 use crate::tools::registry::ToolRegistry;
@@ -38,7 +38,13 @@ pub async fn run_preset(
     }
 
     let out_base = audio.with_extension("").to_string_lossy().to_string() + "_asr";
-    let args = preset.args(&model, audio, language, &out_base);
+    let args = preset.args(
+        &model,
+        audio,
+        language,
+        &out_base,
+        &cfg.asr.zh_initial_prompt,
+    );
 
     let req = ProcessRequest {
         program: cli,
@@ -54,7 +60,17 @@ pub async fn run_preset(
         return Err(asr_failed(&output.stderr));
     }
     let content = std::fs::read_to_string(&srt_path).map_err(|e| asr_failed(&e.to_string()))?;
-    Ok(parse_srt(&content, language).segments)
+    Ok(finish(parse_srt(&content, language).segments, language))
+}
+
+/// 转写后处理：zh 先逐字繁→简，再标疑似幻觉（P4-3）。
+pub fn finish(mut segments: Vec<TranscriptSegment>, language: &str) -> Vec<TranscriptSegment> {
+    if language == "zh" {
+        for s in &mut segments {
+            s.text = super::zh::t2s(&s.text);
+        }
+    }
+    super::postprocess::postprocess(segments)
 }
 
 fn resolve_model(root: &DataRoot, cfg: &AppConfig, _preset: &super::presets::Preset) -> PathBuf {
@@ -65,4 +81,25 @@ fn resolve_model(root: &DataRoot, cfg: &AppConfig, _preset: &super::presets::Pre
         return PathBuf::from(&cfg.asr.model_path);
     }
     super::presets::default_model_path(&root.models_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(t: &str) -> TranscriptSegment {
+        TranscriptSegment {
+            start: 0.0,
+            end: 1.0,
+            text: t.into(),
+            suspect: None,
+        }
+    }
+
+    #[test]
+    fn t2s_only_for_zh() {
+        assert_eq!(finish(vec![seg("長征五號")], "zh")[0].text, "长征五号");
+        assert_eq!(finish(vec![seg("長征五號")], "yue")[0].text, "長征五號");
+        assert_eq!(finish(vec![seg("長征五號")], "auto")[0].text, "長征五號");
+    }
 }
