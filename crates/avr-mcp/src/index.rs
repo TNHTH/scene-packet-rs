@@ -134,6 +134,8 @@ pub struct BoardInterval {
     /// 选中帧的时间。
     pub time: f64,
     pub resource_uri: String,
+    /// 是否在名额内。名额外的帧不随首次返回附图，但可用 get_frame(board=true) 取。
+    pub pushed: bool,
     /// 同时段转写（跳过疑似幻觉句），超过 [`BOARD_TEXT_CHARS`] 字截断。
     pub transcript: String,
 }
@@ -171,6 +173,7 @@ pub fn board_intervals(
                 end: k.end,
                 time: k.time,
                 resource_uri: board_uri(&result.media_key, k.n),
+                pushed: k.pushed,
                 transcript,
             }
         })
@@ -179,7 +182,7 @@ pub fn board_intervals(
 
 /// 最重要的至多 `k` 张板书帧编号（按有效内容分数降序，再按时间排序）。
 pub fn top_board_frames(frames: &[avr_core::keyframes::Keyframe], k: usize) -> Vec<usize> {
-    let mut v: Vec<&avr_core::keyframes::Keyframe> = frames.iter().collect();
+    let mut v: Vec<&avr_core::keyframes::Keyframe> = frames.iter().filter(|f| f.pushed).collect();
     v.sort_by(|a, b| b.content.total_cmp(&a.content).then(a.n.cmp(&b.n)));
     let mut ns: Vec<usize> = v.into_iter().take(k).map(|f| f.n).collect();
     ns.sort_unstable();
@@ -409,6 +412,7 @@ mod tests {
             start,
             end,
             content,
+            pushed: n != 9,
             hash: 0,
         };
         let b = board_intervals(&r, &[kf(0, 0.0, 20.0, 0.1), kf(1, 20.0, 40.0, 0.3)]);
@@ -425,5 +429,8 @@ mod tests {
         ];
         assert_eq!(top_board_frames(&frames, 2), vec![1, 2]);
         assert_eq!(top_board_frames(&frames, 9), vec![0, 1, 2]);
+        let hidden = [kf(0, 0.0, 1.0, 0.1), kf(9, 1.0, 2.0, 0.9)];
+        assert_eq!(top_board_frames(&hidden, 4), vec![0], "名额外的帧不附图");
+        assert!(!board_intervals(&r, &hidden)[1].pushed);
     }
 }

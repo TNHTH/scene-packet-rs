@@ -92,6 +92,10 @@ pub struct Sample {
     pub edges: Vec<u64>,
 }
 
+fn yes() -> bool {
+    true
+}
+
 /// 选中的一帧及其代表的区间。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Keyframe {
@@ -101,6 +105,9 @@ pub struct Keyframe {
     pub start: f64,
     pub end: f64,
     pub content: f32,
+    /// 是否在名额内（推给 AI、附图）。名额外的帧照样缓存，索引只列时间与帧号，get_frame 可取。
+    #[serde(default = "yes")]
+    pub pushed: bool,
     #[serde(skip)]
     pub hash: u64,
 }
@@ -353,6 +360,19 @@ pub fn select(
             must.push((b, w));
         }
     }
+    // 必选帧按包含关系去重：相邻两张里，后一张的文字区域包含前一张，只留后一张（区间并过去）。
+    must.sort_by_key(|m| m.0);
+    let mut dedup: Vec<(usize, (usize, usize))> = Vec::new();
+    for m in must {
+        if let Some(last) = dedup.last_mut() {
+            if contained(&samples[last.0].edges, &samples[m.0].edges) >= cfg.contain_ratio {
+                *last = (m.0, (last.1 .0.min(m.1 .0), last.1 .1.max(m.1 .1)));
+                continue;
+            }
+        }
+        dedup.push(m);
+    }
+    let mut must = dedup;
     // 补充帧：与某张必选帧几乎相同的丢弃（区间并给那张必选帧）。
     kept.retain(|k| {
         let dup = must.iter_mut().find(|m| same(k.0, m.0));
@@ -390,24 +410,63 @@ pub fn select(
         all[idx] = pick(h1);
         all.push(pick(h2));
     }
-    // 名额：总数 max(每小时上限, min_frames)，必选帧先占，补充帧按有效内容分剩余名额。
+    // 名额：max(每小时上限, min_frames)，只限制推给 AI 的帧；第一帧和最后一帧不占名额。
+    // 必选帧先占；必选帧超额时按新颖度贪心（每次挑与已推帧差别最大的一张）。补充帧按有效内容分剩余名额。
+    // 名额外的帧照样保留（pushed=false）。
     let cap = ((duration / 3600.0 * cfg.max_per_hour).ceil() as usize).max(cfg.min_frames);
-    let n_must = all.iter().filter(|x| x.2).count();
-    let mut supp: Vec<(usize, (usize, usize), bool)> =
-        all.iter().filter(|x| !x.2).copied().collect();
-    supp.sort_by(|a, b| samples[b.0].content.total_cmp(&samples[a.0].content));
-    supp.truncate(cap.saturating_sub(n_must));
-    let mut all: Vec<(usize, (usize, usize))> = all
-        .iter()
-        .filter(|x| x.2)
-        .chain(supp.iter())
-        .map(|x| (x.0, x.1))
-        .collect();
+    let mut all: Vec<(usize, (usize, usize), bool)> = all;
     all.sort_by_key(|k| (k.0, k.1 .0));
     all.dedup_by_key(|k| k.0);
+    let len = all.len();
+    let mut pushed = vec![false; len];
+    if len > 0 {
+        pushed[0] = true;
+        pushed[len - 1] = true;
+    }
+    let mut left = cap;
+    let musts: Vec<usize> = (1..len.saturating_sub(1)).filter(|&j| all[j].2).collect();
+    if musts.len() <= left {
+        for &j in &musts {
+            pushed[j] = true;
+        }
+        left -= musts.len();
+        let mut supp: Vec<usize> = (1..len.saturating_sub(1)).filter(|&j| !all[j].2).collect();
+        supp.sort_by(|&a, &b| {
+            samples[all[b].0]
+                .content
+                .total_cmp(&samples[all[a].0].content)
+        });
+        for &j in supp.iter().take(left) {
+            pushed[j] = true;
+        }
+    } else {
+        let mut pool = musts;
+        for _ in 0..left {
+            let Some((pi, _)) = pool
+                .iter()
+                .enumerate()
+                .map(|(pi, &j)| {
+                    let d = (0..len)
+                        .filter(|&q| pushed[q])
+                        .map(|q| novelty(&samples[all[j].0], &samples[all[q].0]))
+                        .fold(f32::INFINITY, f32::min);
+                    (pi, d)
+                })
+                .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+            else {
+                break;
+            };
+            pushed[pool.remove(pi)] = true;
+        }
+    }
+    let all: Vec<(usize, (usize, usize), bool)> = all
+        .iter()
+        .zip(&pushed)
+        .map(|(x, &p)| (x.0, x.1, p))
+        .collect();
     // 区间首尾相接：第 k 帧从其区间起点（不早于上一帧）开始，到下一帧起点结束。
     let mut starts: Vec<f64> = Vec::with_capacity(all.len());
-    for (k, &(i, r)) in all.iter().enumerate() {
+    for (k, &(i, r, _)) in all.iter().enumerate() {
         let t = samples[i].time;
         let st = if k == 0 {
             samples[0].time.min(t)
@@ -424,7 +483,7 @@ pub fn select(
     }
     all.iter()
         .enumerate()
-        .map(|(k, &(i, _))| Keyframe {
+        .map(|(k, &(i, _, pushed))| Keyframe {
             n: k,
             time: samples[i].time,
             start: starts[k],
@@ -433,9 +492,21 @@ pub fn select(
                 .copied()
                 .unwrap_or(duration.max(samples[i].time)),
             content: samples[i].content,
+            pushed,
             hash: samples[i].hash,
         })
         .collect()
+}
+
+/// 候选帧 `a` 相对已推帧 `b` 的新颖度：`a` 中不被 `b` 包含的边缘像素数（新增文字面积），
+/// 空白 / 过渡帧边缘少，新颖度自然低。没有边缘信息时退回 dHash 汉明距离。
+fn novelty(a: &Sample, b: &Sample) -> f32 {
+    if a.edges.is_empty() || b.edges.is_empty() {
+        hamming(a.hash, b.hash) as f32
+    } else {
+        let n: u32 = a.edges.iter().map(|w| w.count_ones()).sum();
+        (1.0 - contained(&a.edges, &b.edges)) * n as f32
+    }
 }
 
 /// 内容大幅减少的起点：其后 `confirm_samples`+1 个采样的有效内容都低于前 `pre` 个采样峰值的
@@ -692,9 +763,16 @@ mod tests {
             ..cfg0()
         };
         let k = select(&v, 600.0, &cfg, &[], &none);
-        assert_eq!(k.len(), 12);
+        // 名额外的帧也保留（pushed=false）；推送的 = 第一帧 + 最后一帧（不占名额）+ 12 张。
+        assert_eq!(k.len(), 100);
         assert!(k.windows(2).all(|w| w[0].time < w[1].time));
-        assert!(k.iter().all(|f| f.content >= 88.0), "按有效内容取前 12");
+        let p: Vec<&Keyframe> = k.iter().filter(|f| f.pushed).collect();
+        assert_eq!(p.len(), 14);
+        assert!(k[0].pushed && k[99].pushed);
+        assert!(
+            p[1..13].iter().all(|f| f.content >= 87.0),
+            "其余按有效内容取前 12"
+        );
     }
 
     #[test]
@@ -854,5 +932,65 @@ mod tests {
             "擦板前写满的 24 秒必须选中：{got:?}"
         );
         assert_eq!(drop_events(&samples, &cfg, 4), vec![13]);
+    }
+
+    #[test]
+    fn consecutive_mandatory_frames_deduped_by_containment() {
+        // 三次擦板：每块板都是上一块的超集（续写后部分擦掉再写）→ 只留最后一张。
+        let mut a = vec![0u64; SAMPLE_W * SAMPLE_H / 64];
+        a[0] = 0xFF;
+        let mut b = a.clone();
+        b[1] = 0xFF;
+        let mut c = b.clone();
+        c[2] = 0xFF;
+        let mut v = Vec::new();
+        for (k, e) in [a, b, c].into_iter().enumerate() {
+            for j in 0..10 {
+                let content = if j < 7 { 0.5 + 0.05 * j as f32 } else { 0.05 };
+                v.push(Sample {
+                    time: (k * 10 + j) as f64 * 2.0,
+                    hash: A,
+                    content,
+                    edges: e.clone(),
+                });
+            }
+        }
+        let must = drop_events(&v, &cfg0(), 4);
+        assert_eq!(must.len(), 3, "{must:?}");
+        let k = select(&v, 60.0, &cfg0(), &[], &none);
+        let before_last_erase: Vec<f64> = k.iter().map(|f| f.time).filter(|&t| t < 54.0).collect();
+        assert_eq!(before_last_erase, vec![52.0], "{k:?}");
+    }
+
+    #[test]
+    fn over_quota_mandatory_frames_picked_by_novelty() {
+        // 6 张必选帧（内容各不相同），名额 2：除首尾外按新颖度挑；其余保留但不推送。
+        let pat = |p: u64| {
+            let mut e = vec![0u64; SAMPLE_W * SAMPLE_H / 64];
+            e[(p as usize) * 3] = u64::MAX;
+            e
+        };
+        let mut v = Vec::new();
+        for k in 0..6u64 {
+            for j in 0..10 {
+                let content = if j < 7 { 0.5 } else { 0.05 };
+                v.push(Sample {
+                    time: (k * 10 + j) as f64 * 2.0,
+                    hash: k * 0x1111,
+                    content,
+                    edges: pat(k),
+                });
+            }
+        }
+        let cfg = KeyframeConfig {
+            min_frames: 2,
+            max_per_hour: 0.0,
+            ..cfg0()
+        };
+        let k = select(&v, 120.0, &cfg, &[], &none);
+        let pushed = k.iter().filter(|f| f.pushed).count();
+        assert_eq!(pushed, 4, "首尾 + 2：{k:?}");
+        assert!(k.len() > pushed, "名额外的帧仍保留");
+        assert!(k.first().unwrap().pushed && k.last().unwrap().pushed);
     }
 }
