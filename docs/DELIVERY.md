@@ -46,6 +46,7 @@
 
 ## 没验证过的
 - **真实下载链路**：B 站与 yt-dlp 下载从未在真实网络上跑过，CI 全部使用 FakeTools。
+- **读板书的覆盖范围**：效果集只有固定机位的透明光板课和英文幻灯片课，没有镜头移动、实体黑板或白板、中文板书。
 - **Windows 上的真实 MCP 链路**：集成测试在 Linux 进程内运行；Windows 上 stdio 启动、whisper 与 ffmpeg 路径未实际跑过。
 - GUI 实际运行。
 - 真实客户端（Claude Desktop、Cursor 等）是否主动调取工具。
