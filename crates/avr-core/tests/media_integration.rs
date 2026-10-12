@@ -270,6 +270,12 @@ async fn failed_packet_can_retry_without_partial_export() {
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut cfg = avr_core::config::AppConfig::default();
     cfg.tools.ffmpeg_path = tool.display().to_string();
+    cfg.tools.ffprobe_path = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("ffprobe"))
+        .find(|p| p.is_file())
+        .unwrap()
+        .display()
+        .to_string();
     let ctx = avr_core::pipeline::PipelineContext {
         root: avr_core::root::DataRoot {
             path: d.path().join("root"),
@@ -288,6 +294,7 @@ async fn failed_packet_can_retry_without_partial_export() {
             .await
             .is_err()
     );
+    assert!(marker.exists(), "必须先成功截图一次，再注入失败");
     assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
     std::fs::write(&tool, "#!/bin/sh\nexec ffmpeg \"$@\"\n").unwrap();
     avr_core::packet::build_packet(&ctx, &video, &output, &options)
