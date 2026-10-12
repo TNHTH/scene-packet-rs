@@ -3,8 +3,7 @@
 use crate::error::{CommandError, CommandResult};
 use crate::mcp::compact_mcp_payload;
 use crate::state::{AppState, SharedState};
-use avr_core::config::{save_config, AppConfig};
-use avr_core::jobs::JobProgress;
+use avr_core::config::{load_config, save_config, AppConfig};
 use avr_core::pipeline::{analyze, AnalyzeOptions, Source};
 use avr_core::root::{needs_first_run_setup, set_root_pointer, DataRoot};
 use avr_core::tools::install::download_and_install;
@@ -14,7 +13,9 @@ use avr_core::tools::ToolId;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
+#[cfg(windows)]
+use tauri::Manager;
+use tauri::{Emitter, State};
 
 #[derive(Serialize)]
 struct ToolStatusDto {
@@ -54,9 +55,9 @@ pub fn run_gui() -> Result<(), String> {
                 start_transcribe,
                 start_analyze,
             ])
-            .setup(|app| {
+            .setup(|_app| {
                 #[cfg(windows)]
-                apply_window_effects(app);
+                apply_window_effects(_app);
                 Ok(())
             })
             .run(tauri::generate_context!())
@@ -86,7 +87,7 @@ fn needs_setup() -> bool {
 
 #[tauri::command]
 fn get_data_root(state: State<SharedState>) -> String {
-    state.root.lock().path.display().to_string()
+    state.context.lock().root.path.display().to_string()
 }
 
 #[tauri::command]
@@ -95,29 +96,36 @@ fn set_data_root(path: String, state: State<SharedState>) -> CommandResult<Strin
         path: PathBuf::from(path),
     };
     new_root.ensure_layout()?;
+    let config = load_config(&new_root)?;
+    let mut context = state.context.lock();
     set_root_pointer(&new_root.path)?;
     let display = new_root.path.display().to_string();
-    *state.root.lock() = new_root;
+    *context = avr_core::pipeline::PipelineContext {
+        root: new_root,
+        config,
+    };
     Ok(display)
 }
 
 #[tauri::command]
 fn get_config(state: State<SharedState>) -> AppConfig {
-    state.config.lock().clone()
+    state.context.lock().config.clone()
 }
 
 #[tauri::command]
 fn save_app_config(
     cfg: AppConfig,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     state: State<SharedState>,
 ) -> CommandResult<()> {
+    #[cfg(windows)]
     let enable_mica = cfg.ui.enable_transparency;
-    save_config(&state.root.lock(), &cfg)?;
-    *state.config.lock() = cfg;
+    let mut context = state.context.lock();
+    save_config(&context.root, &cfg)?;
+    context.config = cfg;
     #[cfg(windows)]
     if enable_mica {
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = _app.get_webview_window("main") {
             use window_vibrancy::apply_mica;
             let _ = apply_mica(&window, None);
         }
@@ -126,51 +134,63 @@ fn save_app_config(
 }
 
 #[tauri::command]
-fn list_tools(state: State<SharedState>) -> Vec<ToolStatusDto> {
-    let cfg = state.config.lock().clone();
-    let reg = ToolRegistry::new(&state.root.lock(), &cfg);
+async fn list_tools(state: State<'_, SharedState>) -> CommandResult<Vec<ToolStatusDto>> {
+    let context = state.pipeline_ctx();
+    let reg = ToolRegistry::new(&context.root, &context.config);
     let manifests = builtin_manifests();
-    ToolId::ALL
+    let (a, b, c, d) = tokio::join!(
+        reg.tool_status_async(ToolId::Ffmpeg),
+        reg.tool_status_async(ToolId::Ffprobe),
+        reg.tool_status_async(ToolId::YtDlp),
+        reg.tool_status_async(ToolId::Whisper)
+    );
+    Ok([a, b, c, d]
         .into_iter()
-        .map(|id| {
-            let st = reg.tool_status(id);
-            let url = manifests
-                .iter()
-                .find(|m| id.matches_manifest(&m.id))
-                .map(|m| m.url.clone());
-            ToolStatusDto {
-                id: id.to_string(),
-                ready: st.ready,
-                path: st.path.map(|p| p.display().to_string()),
-                version: st.version,
-                download_url: url,
-            }
+        .map(|st| ToolStatusDto {
+            id: st.id.to_string(),
+            ready: st.ready,
+            path: st.path.map(|p| p.display().to_string()),
+            version: st.version,
+            download_url: if cfg!(windows) {
+                manifests
+                    .iter()
+                    .find(|m| st.id.matches_manifest(&m.id))
+                    .map(|m| m.url.clone())
+            } else {
+                None
+            },
         })
-        .collect()
+        .collect())
 }
 
 #[tauri::command]
 fn set_tool_path(tool_id: String, path: String, state: State<SharedState>) -> CommandResult<()> {
-    let mut cfg = state.config.lock().clone();
+    let mut context = state.context.lock();
+    let mut cfg = context.config.clone();
     match ToolId::parse(&tool_id).ok_or_else(|| CommandError::invalid_argument("未知工具"))? {
         ToolId::Ffmpeg => cfg.tools.ffmpeg_path = path,
         ToolId::Ffprobe => cfg.tools.ffprobe_path = path,
         ToolId::YtDlp => cfg.tools.ytdlp_path = path,
         ToolId::Whisper => cfg.tools.whisper_cli_path = path,
     }
-    save_config(&state.root.lock(), &cfg)?;
-    *state.config.lock() = cfg;
+    save_config(&context.root, &cfg)?;
+    context.config = cfg;
     Ok(())
 }
 
 #[tauri::command]
 async fn install_tool(tool_id: String, state: State<'_, SharedState>) -> CommandResult<String> {
+    if !cfg!(windows) {
+        return Err(CommandError::invalid_argument(
+            "内置下载仅支持 Windows；请配置本机工具路径",
+        ));
+    }
     let id = ToolId::parse(&tool_id).ok_or_else(|| CommandError::invalid_argument("未知工具"))?;
     let manifest = builtin_manifests()
         .into_iter()
         .find(|m| id.matches_manifest(&m.id))
         .ok_or_else(|| CommandError::invalid_argument("未找到安装清单"))?;
-    let root_path = state.root.lock().path.clone();
+    let root_path = state.context.lock().root.path.clone();
     download_and_install(&manifest, &root_path).await?;
     Ok(format!("已安装 {}", tool_id))
 }
@@ -193,36 +213,7 @@ async fn start_transcribe(
     app: tauri::AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<String, String> {
-    let ctx = state.pipeline_ctx();
-    let deps = state.deps().clone();
-    let app_handle = app.clone();
-    tokio::spawn(async move {
-        let _ = app_handle.emit(
-            "job-progress",
-            JobProgress::Stage {
-                media_key: path.clone(),
-                stage: "starting".into(),
-                percent: 0,
-            },
-        );
-        let result = analyze(
-            &ctx,
-            &Source::Local(PathBuf::from(&path)),
-            &AnalyzeOptions::default(),
-            &deps,
-        )
-        .await;
-        match result {
-            Ok(r) => {
-                let json = compact_mcp_payload(&r, 3000);
-                let _ = app_handle.emit("job-done", json.to_string());
-            }
-            Err(e) => {
-                let _ = app_handle.emit("job-error", e.format_user());
-            }
-        }
-    });
-    Ok("started".into())
+    Ok(start_job(Source::Local(PathBuf::from(path)), app, &state))
 }
 
 #[tauri::command]
@@ -231,20 +222,31 @@ async fn start_analyze(
     app: tauri::AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<String, String> {
+    Ok(start_job(Source::Url(url), app, &state))
+}
+
+fn start_job(source: Source, app: tauri::AppHandle, state: &SharedState) -> String {
     let ctx = state.pipeline_ctx();
     let deps = state.deps().clone();
-    let app_handle = app.clone();
+    let mut events = deps.jobs().subscribe();
     tokio::spawn(async move {
-        let result = analyze(&ctx, &Source::Url(url), &AnalyzeOptions::default(), &deps).await;
+        let options = AnalyzeOptions::default();
+        let analysis = analyze(&ctx, &source, &options, &deps);
+        tokio::pin!(analysis);
+        let result = loop {
+            tokio::select! {
+                result = &mut analysis => break result,
+                Ok(event) = events.recv() => { let _ = app.emit("job-progress", event); }
+            }
+        };
         match result {
             Ok(r) => {
-                let json = compact_mcp_payload(&r, 3000);
-                let _ = app_handle.emit("job-done", json.to_string());
+                let _ = app.emit("job-done", compact_mcp_payload(&r, 3000).to_string());
             }
             Err(e) => {
-                let _ = app_handle.emit("job-error", e.format_user());
+                let _ = app.emit("job-error", e.format_user());
             }
         }
     });
-    Ok("started".into())
+    "started".into()
 }

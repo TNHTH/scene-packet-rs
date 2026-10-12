@@ -1,4 +1,4 @@
-//! 数据根定位与事务化迁移。
+//! 数据根定位、校验复制与指针切换。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,49 +133,58 @@ pub fn set_root_pointer(target: &Path) -> Result<(), AvrError> {
     if let Some(parent) = pointer.parent() {
         fs::create_dir_all(parent).map_err(io_err)?;
     }
-    let tmp = pointer.with_extension("txt.tmp");
-    fs::write(&tmp, target.display().to_string()).map_err(io_err)?;
-    fs::rename(&tmp, &pointer).map_err(io_err)?;
+    crate::storage::atomic_write(&pointer, target.display().to_string().as_bytes())?;
     Ok(())
 }
 
-/// 事务化迁移数据根。
+/// 复制并逐文件校验后切换指针；保留原目录。迁移前应停止使用该数据根的作业。
 pub fn migrate_data_root(old: &Path, new: &Path) -> Result<(), AvrError> {
-    if old == new {
+    let old = fs::canonicalize(old).map_err(io_err)?;
+    let parent = new
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent).map_err(io_err)?;
+    let parent = fs::canonicalize(parent).map_err(io_err)?;
+    let name = new
+        .file_name()
+        .ok_or_else(|| migration_error("迁移目标无效"))?;
+    let target = parent.join(name);
+    if fs::canonicalize(&target).ok().as_ref() == Some(&old) {
         return Ok(());
     }
-    fs::create_dir_all(new).map_err(io_err)?;
-
-    let lock = old.join(".migrate.lock");
-    if lock.exists() {
-        return Err(AvrError::new(
-            ErrorCode::IoError,
-            "检测到未完成的迁移锁。",
-            "手动删除 .migrate.lock 后重试，或联系支持。",
-        ));
+    if target.starts_with(&old) || old.starts_with(&target) {
+        return Err(migration_error("源目录和目标目录不能互相包含"));
     }
-    fs::write(&lock, "1").map_err(io_err)?;
-
-    copy_dir_recursive(old, new)?;
-
-    let old_count = count_files(old)?;
-    let new_count = count_files(new)?;
-    if new_count < old_count {
-        fs::remove_file(&lock).ok();
-        return Err(AvrError::new(
-            ErrorCode::IoError,
-            format!("迁移校验失败: 旧={old_count} 新={new_count}"),
-            "检查目标磁盘空间后重试。",
-        ));
+    if target.exists()
+        && (!target.is_dir() || fs::read_dir(&target).map_err(io_err)?.next().is_some())
+    {
+        return Err(migration_error("迁移目标必须不存在或为空目录"));
     }
-
-    set_root_pointer(new)?;
-    fs::remove_file(&lock).ok();
-    info!("迁移完成: {} -> {}", old.display(), new.display());
+    if fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(migration_error("迁移目标不能是符号链接"));
+    }
+    let _lock = crate::jobs::FileLock::try_acquire(&old.join(".migrate.lock"))?;
+    let staged = tempfile::tempdir_in(&parent).map_err(io_err)?;
+    copy_dir_verified(&old, staged.path())?;
+    if target.exists() {
+        fs::remove_dir(&target).map_err(io_err)?;
+    }
+    fs::rename(staged.path(), &target).map_err(io_err)?;
+    set_root_pointer(&target)?;
+    info!("迁移完成: {} -> {}", old.display(), target.display());
     Ok(())
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), AvrError> {
+fn migration_error(message: &str) -> AvrError {
+    AvrError::new(
+        ErrorCode::IoError,
+        message,
+        "使用独立的空目标目录，停止作业后重试；原目录会保留。",
+    )
+}
+
+fn copy_dir_verified(src: &Path, dst: &Path) -> Result<(), AvrError> {
     fs::create_dir_all(dst).map_err(io_err)?;
     for entry in fs::read_dir(src).map_err(io_err)? {
         let entry = entry.map_err(io_err)?;
@@ -185,29 +194,19 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), AvrError> {
         }
         let from = entry.path();
         let to = dst.join(name);
-        if from.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
+        let kind = entry.file_type().map_err(io_err)?;
+        if kind.is_dir() {
+            copy_dir_verified(&from, &to)?;
+        } else if kind.is_file() {
             fs::copy(&from, &to).map_err(io_err)?;
+            if crate::storage::sha256(&from)? != crate::storage::sha256(&to)? {
+                return Err(migration_error("迁移文件校验失败"));
+            }
+        } else {
+            return Err(migration_error("数据根包含符号链接或非普通文件"));
         }
     }
     Ok(())
-}
-
-fn count_files(dir: &Path) -> Result<usize, AvrError> {
-    let mut n = 0;
-    if !dir.exists() {
-        return Ok(0);
-    }
-    for entry in fs::read_dir(dir).map_err(io_err)? {
-        let entry = entry.map_err(io_err)?;
-        if entry.path().is_dir() {
-            n += count_files(&entry.path())?;
-        } else {
-            n += 1;
-        }
-    }
-    Ok(n)
 }
 
 #[cfg(test)]
@@ -215,6 +214,33 @@ mod tests {
     use super::*;
     use std::env;
     use tempfile::TempDir;
+
+    #[test]
+    fn migration_rejects_nested_or_nonempty_destination() {
+        let tmp = TempDir::new().unwrap();
+        let old = tmp.path().join("old");
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join("source"), b"old").unwrap();
+        assert!(migrate_data_root(&old, &old.join("nested")).is_err());
+        let dest = tmp.path().join("existing");
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("user"), b"preserve").unwrap();
+        assert!(migrate_data_root(&old, &dest).is_err());
+        assert_eq!(fs::read(dest.join("user")).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn migration_copy_skips_lock_and_verifies_content() {
+        let tmp = TempDir::new().unwrap();
+        let old = tmp.path().join("old");
+        let dest = tmp.path().join("copy");
+        fs::create_dir_all(old.join("models")).unwrap();
+        fs::write(old.join(".migrate.lock"), b"stale").unwrap();
+        fs::write(old.join("models/model"), b"model").unwrap();
+        copy_dir_verified(&old, &dest).unwrap();
+        assert!(!dest.join(".migrate.lock").exists());
+        assert_eq!(fs::read(dest.join("models/model")).unwrap(), b"model");
+    }
 
     #[test]
     fn resolve_from_env() {

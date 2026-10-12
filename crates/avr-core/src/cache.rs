@@ -37,8 +37,12 @@ pub fn find_cache_by_url(base_cache: &Path, url: &str) -> Option<PathBuf> {
         if !video_path.exists() {
             continue;
         }
-        let content = fs::read_to_string(&video_path).ok()?;
-        let data: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let Ok(content) = fs::read_to_string(&video_path) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
         let u = data.get("url").and_then(|v| v.as_str());
         let w = data.get("webpage_url").and_then(|v| v.as_str());
         if (u == Some(normalized) || w == Some(normalized))

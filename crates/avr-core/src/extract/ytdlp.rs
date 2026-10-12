@@ -75,8 +75,10 @@ impl YtDlpExtractor {
         let langs = subs.keys().cloned().collect::<Vec<_>>();
         let lang = pick_subtitle_lang(&langs).unwrap_or_else(|| langs[0].clone());
 
-        std::fs::create_dir_all(dest_dir).ok();
-        let outtmpl = dest_dir.join("subtitle");
+        std::fs::create_dir_all(dest_dir).map_err(|e| AvrError::io(e, "创建字幕目录失败"))?;
+        let download =
+            tempfile::tempdir_in(dest_dir).map_err(|e| AvrError::io(e, "创建字幕临时目录失败"))?;
+        let outtmpl = download.path().join("subtitle");
 
         let mut args = base_args(
             &self.cookies_from_browser,
@@ -107,7 +109,11 @@ impl YtDlpExtractor {
         }
 
         for ext in [".vtt", ".srt"] {
-            for entry in std::fs::read_dir(dest_dir).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(download.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let p = entry.path();
                 if p.file_name()
                     .is_some_and(|n| n.to_string_lossy().contains("subtitle"))
@@ -197,18 +203,33 @@ impl YtDlpExtractor {
         end: f64,
         output: &Path,
     ) -> Result<PathBuf, AvrError> {
-        let section = format!("*{start:.3}-{end:.3}");
+        self.download_visual(url, output, Some(format!("*{start:.3}-{end:.3}")))
+            .await
+    }
+
+    pub async fn download_video(&self, url: &str, output: &Path) -> Result<PathBuf, AvrError> {
+        self.download_visual(url, output, None).await
+    }
+
+    async fn download_visual(
+        &self,
+        url: &str,
+        output: &Path,
+        section: Option<String>,
+    ) -> Result<PathBuf, AvrError> {
         let mut args = base_args(
             &self.cookies_from_browser,
             &self.cookies_file,
             &self.user_agent,
             self.ffmpeg.as_ref(),
         );
+        if let Some(section) = section {
+            args.extend(["--download-sections".into(), section]);
+        }
         args.extend([
-            "--download-sections".into(),
-            section,
+            "--no-playlist".into(),
             "-f".into(),
-            "best[height<=480]/best".into(),
+            "bestvideo[height<=480]/best[height<=480]/bestvideo/best".into(),
             "-o".into(),
             output.display().to_string(),
             url.into(),

@@ -163,7 +163,7 @@ pub async fn capture_frame(
         args: vec![
             "-y".into(),
             "-ss".into(),
-            format!("{timestamp:.3}"),
+            format!("{:.6}", (timestamp * 1_000_000.0).floor() / 1_000_000.0),
             "-i".into(),
             input.display().to_string(),
             "-frames:v".into(),
@@ -200,7 +200,7 @@ pub async fn capture_frame_spec(
         args: vec![
             "-y".into(),
             "-ss".into(),
-            format!("{timestamp:.3}"),
+            format!("{:.6}", (timestamp * 1_000_000.0).floor() / 1_000_000.0),
             "-i".into(),
             input.display().to_string(),
             "-frames:v".into(),

@@ -18,6 +18,7 @@ pub fn compact_mcp_payload(result: &AnalyzeResult, max_inline: usize) -> serde_j
     let text = trans
         .map(|t| format_inline_text(t, result.truncated))
         .unwrap_or_default();
+    let truncated = result.truncated || text.len() > max_inline;
     let inline = if text.len() > max_inline {
         format!("{}...", truncate_utf8(&text, max_inline))
     } else {
@@ -36,7 +37,7 @@ pub fn compact_mcp_payload(result: &AnalyzeResult, max_inline: usize) -> serde_j
         "transcript_uri": result.transcript_uri,
         "text_file": result.transcript_path,
         "cache_dir": result.cache_dir,
-        "truncated": result.truncated,
+        "truncated": truncated,
         "sample_segments": sample,
         "has_video": true,
         "text": inline,
@@ -101,6 +102,7 @@ pub(crate) mod tests {
     fn compact_payload_truncates_inline_text() {
         let v = compact_mcp_payload(&sample(&"字".repeat(100)), 10);
         assert_eq!(v["source"], "asr");
+        assert_eq!(v["truncated"], true);
         assert!(v["text"].as_str().unwrap().ends_with("..."));
         assert_eq!(v["segment_count"], 1);
     }

@@ -81,3 +81,34 @@ async fn synchronous_compatibility_entry_works_inside_tokio() {
     let out = avr_core::process::run_blocking(&request("printf ok")).unwrap();
     assert_eq!(out.stdout, "ok");
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cancellation_reaps_descendants() {
+    let t = tempfile::tempdir().unwrap();
+    let pid_file = t.path().join("pid");
+    let mut req = request("sleep 30 & echo $! > pid; wait");
+    req.cwd = Some(t.path().to_path_buf());
+    let task = tokio::spawn(async move { avr_core::process::run(&req).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    let _ = task.await;
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match std::fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
+                Err(_) => break,
+                Ok(s) if s.split(") ").nth(1).unwrap().starts_with("Z ") => break,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .unwrap();
+}

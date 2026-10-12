@@ -539,6 +539,9 @@ fn drop_events(samples: &[Sample], cfg: &KeyframeConfig, pre: usize) -> Vec<usiz
 /// 选帧结果缓存（`<cache>/keyframes.json`），参数变化即重算。
 #[derive(Serialize, Deserialize)]
 struct Cached {
+    // 包括算法版本与转写，旧缓存自动失效。
+    revision: u32,
+    transcript_digest: String,
     config: KeyframeConfig,
     frames: Vec<Keyframe>,
 }
@@ -553,12 +556,20 @@ pub async fn load_or_compute(
     cfg: &KeyframeConfig,
     transcript: Option<&crate::models::Transcript>,
 ) -> Result<Vec<Keyframe>, AvrError> {
+    use sha2::{Digest, Sha256};
+    let transcript_digest = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&transcript)
+                .map_err(|e| AvrError::io(std::io::Error::other(e), "转写序列化失败"))?
+        )
+    );
     let path = cache_dir.join(CACHE_FILE);
     if let Some(c) = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice::<Cached>(&b).ok())
     {
-        if c.config == *cfg {
+        if c.revision == 2 && c.config == *cfg && c.transcript_digest == transcript_digest {
             return Ok(c.frames);
         }
     }
@@ -575,6 +586,8 @@ pub async fn load_or_compute(
     let units = |a: f64, b: f64| speech_units_between(transcript, a, b);
     let frames = select(&samples, duration, cfg, &scenes, &units);
     let body = serde_json::to_vec(&Cached {
+        revision: 2,
+        transcript_digest,
         config: cfg.clone(),
         frames: frames.clone(),
     })
@@ -620,8 +633,19 @@ pub async fn sample_video(
     interval_secs: f64,
     tmp_dir: &Path,
 ) -> Result<Vec<Sample>, AvrError> {
+    if !interval_secs.is_finite() || interval_secs <= 0.0 {
+        return Err(crate::error::process_failed("采样间隔必须大于 0"));
+    }
     std::fs::create_dir_all(tmp_dir).map_err(|e| AvrError::io(e, "无法创建选帧临时目录"))?;
-    let out = tmp_dir.join("keyframe_samples.gray");
+    let temporary = tempfile::Builder::new()
+        .suffix(".gray")
+        .tempfile_in(tmp_dir)
+        .map_err(|e| AvrError::io(e, "无法创建采样文件"))?;
+    let out = temporary.path().to_path_buf();
+    let timestamps = tempfile::Builder::new()
+        .suffix(".framecrc")
+        .tempfile_in(tmp_dir)
+        .map_err(|e| AvrError::io(e, "无法创建采样时间文件"))?;
     let req = ProcessRequest {
         program: ctx.ffmpeg.clone(),
         args: vec![
@@ -630,23 +654,75 @@ pub async fn sample_video(
             "error".into(),
             "-i".into(),
             video.display().to_string(),
-            "-vf".into(),
-            format!("fps=1/{interval_secs},scale={SAMPLE_W}:{SAMPLE_H},format=gray"),
+            "-filter_complex".into(),
+            format!("[0:v:0]setpts=PTS-STARTPTS,select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval_secs})',scale={SAMPLE_W}:{SAMPLE_H},format=gray,split[pixels][timing]"),
+            "-map".into(), "[pixels]".into(),
+            "-vsync".into(), "0".into(),
+            "-enc_time_base".into(), "-1".into(),
             "-f".into(),
             "rawvideo".into(),
             out.display().to_string(),
+            "-map".into(), "[timing]".into(),
+            "-vsync".into(), "0".into(),
+            "-enc_time_base".into(), "-1".into(),
+            "-c:v".into(), "rawvideo".into(),
+            "-f".into(), "framecrc".into(),
+            timestamps.path().display().to_string(),
         ],
         cwd: None,
         timeout: Some(Duration::from_secs(1800)),
-        expected_outputs: vec![out.clone()],
+        expected_outputs: vec![out.clone(), timestamps.path().to_path_buf()],
     };
     run(&req).await?;
     let bytes = std::fs::read(&out).map_err(|e| AvrError::io(e, "读取选帧采样失败"))?;
-    let _ = std::fs::remove_file(&out);
-    Ok(samples_from_raw(&bytes, interval_secs))
+
+    let timing = std::fs::read_to_string(timestamps.path())
+        .map_err(|e| AvrError::io(e, "读取采样时间失败"))?;
+    let times = parse_sample_times(&timing)?;
+    let mut samples = samples_from_raw(&bytes, interval_secs);
+    if times.len() != samples.len() || bytes.len() % (SAMPLE_W * SAMPLE_H) != 0 {
+        return Err(crate::error::process_failed("采样图像与时间数量不一致"));
+    }
+    for (sample, time) in samples.iter_mut().zip(times) {
+        sample.time = time;
+    }
+    Ok(samples)
 }
 
-/// rawvideo 字节 → 采样帧；第 k 帧时间为 k×interval（ffmpeg fps 滤镜从 0 开始）。
+// framecrc 和 rawvideo 来自同一 split，保留被评分画面的实际 PTS（含变帧率）。
+fn parse_sample_times(text: &str) -> Result<Vec<f64>, AvrError> {
+    let fail = || crate::error::process_failed("无效的采样时间信息");
+    let tb = text
+        .lines()
+        .find_map(|line| line.strip_prefix("#tb 0: "))
+        .ok_or_else(fail)?;
+    let (num, den) = tb.trim().split_once('/').ok_or_else(fail)?;
+    let ratio = num.trim().parse::<f64>().map_err(|_| fail())?
+        / den.trim().parse::<f64>().map_err(|_| fail())?;
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return Err(fail());
+    }
+    text.lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .map(|line| {
+            let pts = line
+                .split(',')
+                .nth(2)
+                .ok_or_else(fail)?
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| fail())?;
+            let time = pts as f64 * ratio;
+            if time.is_finite() && time >= 0.0 {
+                Ok(time)
+            } else {
+                Err(fail())
+            }
+        })
+        .collect()
+}
+
+/// 等间隔 rawvideo 字节 → 采样帧；实际视频采样入口会用真实 PTS 覆盖时间。
 pub fn samples_from_raw(bytes: &[u8], interval_secs: f64) -> Vec<Sample> {
     bytes
         .as_chunks::<{ SAMPLE_W * SAMPLE_H }>()

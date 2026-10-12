@@ -114,28 +114,37 @@ pub async fn extract_frames(
     width: u32,
     delivery: FrameDelivery,
 ) -> Result<Vec<CapturedFrame>, AvrError> {
-    std::fs::create_dir_all(frames_dir).ok();
+    std::fs::create_dir_all(frames_dir).map_err(|e| AvrError::io(e, "检查截图目录。"))?;
+    if width == 0 || times.iter().any(|t| !t.is_finite() || *t < 0.0) {
+        return Err(crate::error::process_failed("截图宽度或时间无效"));
+    }
+    if !times.is_empty() {
+        let duration = crate::ffmpeg::probe_duration(ctx, video).await?;
+        validate_times(times, duration)?;
+    }
     let mut out = Vec::new();
     for t in times {
         let name = format!("t_{:06.0}.jpg", t * 1000.0);
         let path = frames_dir.join(&name);
         capture_frame(ctx, video, *t, &path, width).await?;
+        let dimensions =
+            imagesize::size(&path).map_err(|e| crate::error::process_failed(&e.to_string()))?;
         let uri = crate::paths::to_file_uri(&path);
         let ts = format_timestamp(*t);
         let markdown = format!("![{ts}](images/{name})");
         let base64_data = match delivery {
             FrameDelivery::Path => None,
-            FrameDelivery::Inline | FrameDelivery::Both => {
-                std::fs::read(&path).ok().map(|b| STANDARD.encode(&b))
-            }
+            FrameDelivery::Inline | FrameDelivery::Both => Some(
+                STANDARD.encode(std::fs::read(&path).map_err(|e| AvrError::io(e, "读取截图失败"))?),
+            ),
         };
         out.push(CapturedFrame {
             time: *t,
             path: path.display().to_string(),
             file_uri: uri,
             markdown,
-            width,
-            height: 0,
+            width: dimensions.width as u32,
+            height: dimensions.height as u32,
             base64: base64_data,
         });
     }
@@ -150,44 +159,33 @@ pub async fn detect_scene_hints(
     detect_scenes(ctx, video, cfg.ui.scene_threshold).await
 }
 
-/// URL 视觉源四级 fallback 入口。
+/// URL 视觉源：完整时间轴的低分辨率视频，暂存验证后提交，避免局部片段偏移。
 pub async fn resolve_visual_source(
     ytdlp: &crate::extract::ytdlp::YtDlpExtractor,
-    _ffmpeg: &FfmpegContext,
+    ffmpeg: &FfmpegContext,
     url: &str,
     cache_dir: &Path,
-    timestamp: f64,
+    _timestamp: f64,
 ) -> Result<PathBuf, AvrError> {
-    let local_video = cache_dir.join("source.mp4");
-    if local_video.exists() {
-        return Ok(local_video);
+    for name in ["source.mp4", "visual_full.mp4"] {
+        let path = cache_dir.join(name);
+        if path.is_file() {
+            return Ok(path);
+        }
     }
-    let proxy = cache_dir.join("visual_proxy.mp4");
-    if proxy.exists() {
-        return Ok(proxy);
+    std::fs::create_dir_all(cache_dir).map_err(|e| AvrError::io(e, "创建视觉缓存目录失败"))?;
+    let _lock = crate::jobs::FileLock::try_acquire(&cache_dir.join(".visual.lock"))?;
+    let stage =
+        tempfile::tempdir_in(cache_dir).map_err(|e| AvrError::io(e, "创建视觉临时目录失败"))?;
+    let part = stage.path().join("video.mp4");
+    ytdlp.download_video(url, &part).await?;
+    let probe = crate::ffmpeg::probe_media(ffmpeg, &part).await?;
+    if probe.width == 0 || probe.height == 0 || probe.duration <= 0.0 {
+        return Err(crate::error::process_failed("下载内容没有视频轨道"));
     }
-
-    let clip = cache_dir.join("clip.mp4");
-    let start = (timestamp - 3.0).max(0.0);
-    let end = timestamp + 3.0;
-    if ytdlp.download_section(url, start, end, &clip).await.is_ok() && clip.exists() {
-        return Ok(clip);
-    }
-
-    if ytdlp
-        .download_section(url, 0.0, 3600.0, &proxy)
-        .await
-        .is_ok()
-        && proxy.exists()
-    {
-        return Ok(proxy);
-    }
-
-    Err(crate::error::AvrError::new(
-        crate::error::ErrorCode::VisualProxyFailed,
-        "无法获取视频画面源",
-        "检查网络与 Cookie 设置后重试。",
-    ))
+    let target = cache_dir.join("visual_full.mp4");
+    std::fs::rename(&part, &target).map_err(|e| AvrError::io(e, "提交视觉缓存失败"))?;
+    Ok(target)
 }
 
 /// 自动候选限制在可解码的最后一帧；用户手动补帧保持原时间。

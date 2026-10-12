@@ -25,6 +25,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install ffmpeg (P3 baseline)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: python3 -B -m unittest discover -s tools/tests -v
       - run: cargo fmt --all -- --check
       - run: cargo clippy -p avr-core -p avr-mcp -p avr-cli --all-targets -- -D warnings
       - run: cargo test -p avr-core -p avr-cli

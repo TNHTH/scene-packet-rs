@@ -20,18 +20,10 @@ pub async fn download_and_install(
         .parent()
         .ok_or_else(|| install_error("安装目录无父目录"))?;
     std::fs::create_dir_all(parent).map_err(io_err)?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(parent.join(format!(
-            ".{}.install.lock",
-            install_dir.file_name().unwrap().to_string_lossy()
-        )))
-        .map_err(io_err)?;
-    fs4::fs_std::FileExt::try_lock_exclusive(&lock)
-        .map_err(|_| install_error("此工具正在安装，请稍后重试"))?;
+    let _lock = crate::jobs::FileLock::try_acquire(&parent.join(format!(
+        ".{}.install.lock",
+        install_dir.file_name().unwrap().to_string_lossy()
+    )))?;
     let work = tempfile::Builder::new()
         .prefix(".install-")
         .tempdir_in(parent)

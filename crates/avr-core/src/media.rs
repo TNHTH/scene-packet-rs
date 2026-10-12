@@ -70,8 +70,15 @@ pub fn platform_media_id(url: &str) -> Option<String> {
 
     match platform {
         Platform::Bilibili => {
-            if let Some(bv) = regex_bv(&lower) {
-                return Some(format!("bilibili:{bv}"));
+            if let Some(bv) = regex_bv(&normalized) {
+                let parsed = Url::parse(&normalized).ok()?;
+                let page = parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "p")
+                    .and_then(|(_, v)| v.parse::<u64>().ok())
+                    .filter(|p| *p > 0)
+                    .unwrap_or(1);
+                return Some(format!("bilibili:{bv}:p{page}"));
             }
         }
         Platform::Douyin => {
@@ -83,14 +90,18 @@ pub fn platform_media_id(url: &str) -> Option<String> {
     None
 }
 
-static BV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"bv[0-9a-z]+").expect("valid regex"));
+static BV_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/video/((?i:bv)[0-9A-Za-z]+)").expect("valid regex"));
 static DOUYIN_VIDEO_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/video/(\d+)").expect("valid regex"));
 static DOUYIN_MODAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"modal_id=(\d+)").expect("valid regex"));
 
 fn regex_bv(s: &str) -> Option<String> {
-    BV_RE.find(s).map(|m| m.as_str().to_uppercase())
+    BV_RE
+        .captures(s)
+        .and_then(|c| c.get(1))
+        .map(|m| format!("BV{}", &m.as_str()[2..]))
 }
 
 fn regex_douyin_id(s: &str) -> Option<String> {

@@ -5,9 +5,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use crate::cache::{
-    find_cache_by_url, load_cached_transcript, save_cache, AsrFingerprint, CACHE_SCHEMA,
-};
+use crate::cache::{load_cached_transcript, save_cache, AsrFingerprint, CACHE_SCHEMA};
 use crate::config::{effective_cache_dir, load_config, AppConfig};
 use crate::error::{no_transcript_asr_not_configured, unsupported_url, AvrError};
 use crate::extract::platform::detect_platform;
@@ -171,13 +169,7 @@ async fn run_url_pipeline(
         })
     };
     stage("checking_cache", 5);
-    let fp = asr_fingerprint(ctx, deps);
-
-    if let Some(hit) = find_cache_by_url(&effective_cache_dir(&ctx.root, &ctx.config), url) {
-        if load_cached_transcript(&hit, Some(&fp))?.is_some() {
-            return build_result_from_cache(&hit, key);
-        }
-    }
+    let fp = asr_fingerprint(ctx, deps).await?;
 
     if let Some((video, trans, _)) = load_cached_transcript(item_cache, Some(&fp))? {
         return Ok(make_analyze_result(&video, &trans, item_cache, key));
@@ -217,13 +209,16 @@ async fn transcribe_local_with(
     path: &Path,
     deps: &Deps,
 ) -> Result<AnalyzeResult, AvrError> {
+    let canonical =
+        std::fs::canonicalize(path).map_err(|e| AvrError::io(e, "检查输入文件路径。"))?;
+    let path = canonical.as_path();
     let duration = deps.tools.probe_duration(ctx, path).await?;
-    let key = media_key(
-        &MediaSource::LocalFile {
-            path: path.to_path_buf(),
-        },
-        Some(duration),
-    )?;
+    let source = MediaSource::LocalFile {
+        path: path.to_path_buf(),
+    };
+    let key = tokio::task::spawn_blocking(move || media_key(&source, Some(duration)))
+        .await
+        .map_err(|e| crate::error::process_failed(&e.to_string()))??;
     let item_cache = item_cache_dir(ctx, &MediaKey::parse(&key)?);
 
     let path_clone = path.to_path_buf();
@@ -258,11 +253,7 @@ async fn run_local_pipeline(
     item_cache: &Path,
     key: &str,
 ) -> Result<AnalyzeResult, AvrError> {
-    let fp = asr_fingerprint(ctx, deps);
-    if let Some((video, trans, _)) = load_cached_transcript(item_cache, Some(&fp))? {
-        return Ok(make_analyze_result(&video, &trans, item_cache, key));
-    }
-
+    let fp = asr_fingerprint(ctx, deps).await?;
     let tools = &deps.tools;
     let video = crate::models::VideoInfo {
         id: key.to_string(),
@@ -275,6 +266,12 @@ async fn run_local_pipeline(
         platform: crate::models::Platform::Local,
         webpage_url: path.display().to_string(),
     };
+
+    if let Some((_, trans, meta)) = load_cached_transcript(item_cache, Some(&fp))? {
+        // 内容相同的文件共享转写，视觉源必须指向这次实际输入。
+        save_cache(item_cache, &video, &trans, &meta)?;
+        return Ok(make_analyze_result(&video, &trans, item_cache, key));
+    }
 
     transcribe_and_save(
         &StageCtx {
@@ -363,7 +360,15 @@ where
 ///
 /// `model` 只含模型文件的内容指纹（不含路径；路径仅用于读取），
 /// 同路径换模型会失效，touch / 复制到别的路径不会。
-fn asr_fingerprint(ctx: &PipelineContext, deps: &Deps) -> AsrFingerprint {
+async fn asr_fingerprint(ctx: &PipelineContext, deps: &Deps) -> Result<AsrFingerprint, AvrError> {
+    let ctx = ctx.clone();
+    let deps = deps.clone();
+    tokio::task::spawn_blocking(move || fingerprint_sync(&ctx, &deps))
+        .await
+        .map_err(|e| crate::error::process_failed(&e.to_string()))
+}
+
+fn fingerprint_sync(ctx: &PipelineContext, deps: &Deps) -> AsrFingerprint {
     let model_path =
         crate::tools::registry::ToolRegistry::new(&ctx.root, &ctx.config).whisper_model_path();
     AsrFingerprint {
@@ -568,6 +573,40 @@ mod tests {
             r.transcript.unwrap().source,
             crate::models::TranscriptSource::Asr
         );
+    }
+
+    #[tokio::test]
+    async fn identical_local_content_rebinds_visual_source() {
+        use crate::tools::runtime::fake::FakeTools;
+        use std::sync::atomic::Ordering;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = test_ctx(&tmp);
+        let fake = Arc::new(FakeTools::default());
+        let deps = Deps::new(Arc::new(JobManager::new())).with_tools(fake.clone());
+        let a = tmp.path().join("first.mp4");
+        let b = tmp.path().join("copy.mp4");
+        std::fs::write(&a, b"same content").unwrap();
+        std::fs::copy(&a, &b).unwrap();
+        let first = analyze(
+            &ctx,
+            &Source::Local(a.clone()),
+            &AnalyzeOptions::new(),
+            &deps,
+        )
+        .await
+        .unwrap();
+        std::fs::remove_file(a).unwrap();
+        let second = analyze(
+            &ctx,
+            &Source::Local(b.clone()),
+            &AnalyzeOptions::new(),
+            &deps,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.media_key, second.media_key);
+        assert_eq!(second.video.url, b.display().to_string());
+        assert_eq!(fake.transcribe_calls.load(Ordering::SeqCst), 1);
     }
 
     /// P2-3：换 ASR 版本后转写缓存不命中、重新转写；媒体缓存（audio.wav）仍命中，不重新下载。

@@ -1,85 +1,94 @@
 #!/usr/bin/env python
-"""合并 document.cookie 与现有 Netscape 文件，保留 HttpOnly 项（如 ttwid）。"""
+"""合并 document.cookie 与 Netscape 文件，保留 HttpOnly 和不同路径项。"""
 from __future__ import annotations
 
-import sys
+import argparse
+import os
+import tempfile
 import time
 from pathlib import Path
+from typing import Tuple
 
 OUT = Path(r"E:\AIVideoReader\cookies\douyin.txt")
 DOMAIN = ".douyin.com"
-EXPIRY = str(int(time.time()) + 86400 * 30)
+CookieKey = Tuple[str, str, str]
+CookieRow = Tuple[str, str, str, str, str, str, str]
 
 
-def parse_netscape(path: Path) -> dict[tuple[str, str], tuple[str, str, str, str]]:
-    """(domain, name) -> (domain, secure, path, expiry, name, value)"""
-    rows: dict[tuple[str, str], tuple[str, str, str, str, str, str]] = {}
+def parse_netscape(path: Path) -> dict[CookieKey, CookieRow]:
+    rows = {}
     if not path.exists():
         return rows
     for line in path.read_text(encoding="utf-8").splitlines():
-        if not line or line.startswith("#"):
+        if not line or (line.startswith("#") and not line.startswith("#HttpOnly_")):
             continue
         parts = line.split("\t")
-        if len(parts) != 7:
-            continue
-        domain, flag, cpath, secure, expiry, name, value = parts
-        rows[(domain, name)] = (domain, flag, cpath, secure, expiry, name, value)
+        if len(parts) == 7:
+            domain, flag, cpath, secure, expiry, name, value = parts
+            rows[((domain[10:] if domain.startswith("#HttpOnly_") else domain), cpath, name)] = tuple(parts)
     return rows
 
 
-def write_netscape(path: Path, rows: dict[tuple[str, str], tuple[str, str, str, str, str, str]]) -> None:
+def write_netscape(path: Path, rows: dict[CookieKey, CookieRow]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ["# Netscape HTTP Cookie File", "# Refreshed for yt-dlp"]
-    for (_domain, _name), (domain, flag, cpath, secure, expiry, name, value) in sorted(
-        rows.items(), key=lambda x: x[1][5]
-    ):
-        lines.append(f"{domain}\t{flag}\t{cpath}\t{secure}\t{expiry}\t{name}\t{value}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines.extend("\t".join(row) for _, row in sorted(rows.items()))
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as f:
+            temporary = Path(f.name)
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
-def merge_document_cookie(cookie_str: str, existing: Path) -> int:
+def merge_document_cookie(cookie_str: str, existing: Path, token: str = "") -> int:
+    if not isinstance(cookie_str, str) or not isinstance(token, str):
+        raise ValueError("cookie 和 token 必须是字符串")
     rows = parse_netscape(existing)
+    expiry = str(int(time.time()) + 86400 * 30)
+    updates = []
+    for part in cookie_str.split(";"):
+        if "=" in part:
+            name, value = part.strip().split("=", 1)
+            if name and name != "douyin.com":
+                updates.append((name, value))
+    if token.strip():
+        updates.append(("msToken", token.strip()))
     updated = 0
-    for part in cookie_str.split("; "):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        name, value = part.split("=", 1)
-        if name == "douyin.com":
-            continue
-        key = (DOMAIN, name)
+    for name, value in updates:
+        if any(c in name + value for c in "\r\n\t"):
+            raise ValueError("cookie 含非法控制字符")
+        key = (DOMAIN, "/", name)
         old = rows.get(key)
-        secure = old[3] if old else "FALSE"
-        rows[key] = (DOMAIN, "TRUE", "/", secure, EXPIRY, name, value)
+        # document.cookie 无法提供 HttpOnly 项，不用同名脚本可见项覆盖它。
+        if old and old[0].startswith("#HttpOnly_"):
+            continue
+        rows[key] = (DOMAIN, "TRUE", "/", old[3] if old else "FALSE", expiry, name, value)
         updated += 1
     write_netscape(existing, rows)
     return updated
 
 
 def merge_ms_token(token: str, existing: Path = OUT) -> None:
-    """写入 msToken（来自 localStorage xmst 或浏览器导出）。"""
-    if not token.strip():
-        return
-    rows = parse_netscape(existing)
-    rows[(DOMAIN, "msToken")] = (DOMAIN, "TRUE", "/", "FALSE", EXPIRY, "msToken", token.strip())
-    write_netscape(existing, rows)
+    if token.strip():
+        merge_document_cookie("", existing, token)
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print(
-            "用法: python refresh-douyin-cookies.py \"document.cookie字符串\" [msToken]",
-            file=sys.stderr,
-        )
-        return 1
-    cookie_str = sys.argv[1]
-    n = merge_document_cookie(cookie_str, OUT)
-    if len(sys.argv) >= 3:
-        merge_ms_token(sys.argv[2], OUT)
-        print(f"msToken updated")
-    print(f"updated {n} cookies -> {OUT} (total {len(parse_netscape(OUT))})")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("cookie", help="document.cookie 字符串；推荐用 from-json 入口避免命令行传密钥")
+    parser.add_argument("token", nargs="?", default="")
+    parser.add_argument("--output", type=Path, default=OUT)
+    args = parser.parse_args()
+    n = merge_document_cookie(args.cookie, args.output, args.token)
+    print(f"updated {n} cookies -> {args.output}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

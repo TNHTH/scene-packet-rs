@@ -190,7 +190,9 @@ enable_transparency = true
 scene_threshold = 0.3
 visual_hint_limit = 50
 """
-    (DATA_ROOT / "config.toml").write_text(cfg, encoding="utf-8")
+    config_path = DATA_ROOT / "config.toml"
+    if not config_path.exists():
+        config_path.write_text(cfg, encoding="utf-8")
     appdata = Path(os.environ["APPDATA"]) / "AIVideoReader"
     appdata.mkdir(parents=True, exist_ok=True)
     ptr = appdata / "root.txt"

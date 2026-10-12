@@ -144,6 +144,19 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
             "应带 JPEG 图片"
         );
 
+        assert_eq!(info["width"], 160);
+        assert!(info["height"].as_u64().unwrap() > 0);
+        let legacy = json_of(
+            &call(
+                &client,
+                "extract_frames",
+                json!({"media_key":key,"times":[0.0],"delivery":"path","width":160}),
+            )
+            .await,
+        );
+        assert!(legacy.is_array(), "{legacy}");
+        assert!(legacy[0]["height"].as_u64().unwrap() > 0);
+
         // P5-2：索引带板书区间；get_frame(board) 一次多张、超过 4 张报错。
         let board = index["board"].as_array().expect("index 应带 board[]");
         assert!(!board.is_empty(), "{index}");
@@ -263,8 +276,8 @@ async fn mcp_tools_end_to_end_and_traversal_rejected() {
         .lines()
         .map(|l| serde_json::from_str(l).expect("每行是 JSON"))
         .collect();
-    // 有 ffmpeg 时：get_frame 单张 1 次 + 板书多张 / 超限 / 越界 3 次 + width 越界 3 次。
-    let calls = 3 + pages + 7 * usize::from(ff.is_some()) + 7 * 4;
+    // 有 ffmpeg 时：get_frame 1 次 + legacy extract_frames 1 次 + 板书 3 次 + width 3 次。
+    let calls = 3 + pages + 8 * usize::from(ff.is_some()) + 7 * 4;
     assert_eq!(lines.len(), calls, "日志行数应等于工具调用次数");
     for l in &lines {
         for k in ["ts", "tool", "args", "bytes", "ok"] {

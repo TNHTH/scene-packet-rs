@@ -8,6 +8,7 @@ import sys
 os.chdir(Path(__file__).resolve().parents[1])
 env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1")
 commands = [
+    [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tools/tests", "-v"],
     ["cargo", "test", "--locked", "-p", "avr-core", "-p", "avr-mcp", "-p", "avr-cli"],
     [
         "cargo",

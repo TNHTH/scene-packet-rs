@@ -9,16 +9,14 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 pub struct AppState {
-    pub root: Mutex<DataRoot>,
-    pub config: Mutex<AppConfig>,
+    pub context: Mutex<PipelineContext>,
     deps: Deps,
 }
 
 impl AppState {
     pub fn new(root: DataRoot, config: AppConfig) -> Self {
         Self {
-            root: Mutex::new(root),
-            config: Mutex::new(config),
+            context: Mutex::new(PipelineContext { root, config }),
             deps: Deps::new(Arc::new(JobManager::new())),
         }
     }
@@ -34,10 +32,7 @@ impl AppState {
     }
 
     pub fn pipeline_ctx(&self) -> PipelineContext {
-        PipelineContext {
-            root: self.root.lock().clone(),
-            config: self.config.lock().clone(),
-        }
+        self.context.lock().clone()
     }
 
     pub fn deps(&self) -> &Deps {

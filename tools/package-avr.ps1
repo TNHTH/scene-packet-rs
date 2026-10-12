@@ -1,16 +1,22 @@
-param([string]$Profile = "release")
+param([ValidateSet("release", "dev")][string]$Profile = "release")
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 
 Push-Location "$Root\desktop\ui"
-npm run build --silent
-Pop-Location
+try {
+    npm ci --silent
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+    npm run build --silent
+    if ($LASTEXITCODE -ne 0) { throw "frontend build failed" }
+} finally { Pop-Location }
 
-cargo build --$Profile -p avr
+cargo build --locked --profile $Profile -p avr
+if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+$ArtifactProfile = if ($Profile -eq "dev") { "debug" } else { $Profile }
 
-$Exe = Join-Path $Root "target\$Profile\avr.exe"
+$Exe = Join-Path $Root "target\$ArtifactProfile\avr.exe"
 $SizeMb = [math]::Round((Get-Item $Exe).Length / 1MB, 2)
 Write-Host "avr.exe size: $SizeMb MB"
 
