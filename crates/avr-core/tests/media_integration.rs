@@ -311,3 +311,73 @@ async fn failed_packet_can_retry_without_partial_export() {
         std::fs::read(output.join("manifest.json")).unwrap()
     );
 }
+
+#[tokio::test]
+async fn sampling_preserves_video_offset_relative_to_audio() {
+    let Some(ctx) = ffmpeg() else {
+        return;
+    };
+    let d = tempfile::tempdir().unwrap();
+    let video = d.path().join("offset.mkv");
+    let out = Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=duration=3.5",
+            "-itsoffset",
+            "0.5",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=10:duration=3",
+            "-map",
+            "1:v",
+            "-map",
+            "0:a",
+            "-vsync",
+            "0",
+            "-c:v",
+            "ffv1",
+            "-c:a",
+            "pcm_s16le",
+        ])
+        .arg(&video)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let samples = sample_video(&ctx, &video, 1.0, d.path()).await.unwrap();
+    assert_eq!(
+        samples.iter().map(|s| s.time).collect::<Vec<_>>(),
+        vec![0.5, 1.5, 2.5]
+    );
+    for sample in samples {
+        let out = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", &sample.time.to_string(), "-i"])
+            .arg(&video)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=160:90,format=gray",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(sample.hash, dhash(&out.stdout, SAMPLE_W, SAMPLE_H));
+    }
+    let shifted = d.path().join("shifted.mkv");
+    make_video(&shifted, "setpts=PTS+5/TB", "1", "10");
+    let samples = sample_video(&ctx, &shifted, 0.5, d.path()).await.unwrap();
+    assert_eq!(samples[0].time, 0.0, "容器起点归零，保留轨道间相对偏移");
+}

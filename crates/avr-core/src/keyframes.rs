@@ -655,7 +655,7 @@ pub async fn sample_video(
             "-i".into(),
             video.display().to_string(),
             "-filter_complex".into(),
-            format!("[0:v:0]setpts=PTS-STARTPTS,select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval_secs})',scale={SAMPLE_W}:{SAMPLE_H},format=gray,split[pixels][timing]"),
+            format!("[0:v:0]select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval_secs})',scale={SAMPLE_W}:{SAMPLE_H},format=gray,split[pixels][timing]"),
             "-map".into(), "[pixels]".into(),
             "-vsync".into(), "0".into(),
             "-enc_time_base".into(), "-1".into(),
