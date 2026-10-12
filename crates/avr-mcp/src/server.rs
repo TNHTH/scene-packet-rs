@@ -29,7 +29,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -128,17 +128,22 @@ impl Captured {
             "resource_uri": self.resource_uri,
             "path": self.frame.path,
             "file_uri": self.frame.file_uri,
+            "width": self.frame.width,
+            "height": self.frame.height,
         })
     }
 }
 
 /// 结果对应的视频画面源（缓存的视频或本地原文件）。
 fn visual_source(result: &avr_core::models::AnalyzeResult) -> Option<PathBuf> {
-    let cache = PathBuf::from(&result.cache_dir);
-    ["source.mp4", "visual_proxy.mp4", "clip.mp4"]
+    cached_visual_source(Path::new(&result.cache_dir), &result.video)
+}
+
+fn cached_visual_source(cache: &Path, video: &avr_core::models::VideoInfo) -> Option<PathBuf> {
+    ["source.mp4", "visual_full.mp4"]
         .iter()
         .map(|f| cache.join(f))
-        .chain(std::iter::once(PathBuf::from(&result.video.url)))
+        .chain(std::iter::once(PathBuf::from(&video.url)))
         .find(|p| p.is_file())
 }
 
@@ -216,11 +221,10 @@ impl AvrMcpServer {
                 r#"{"error":true,"message":"未找到缓存"}"#,
             )]));
         }
-        let (_, transcript, _) = loaded.unwrap();
+        let (video_info, transcript, _) = loaded.unwrap();
         let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
             .map_err(|e| rmcp::ErrorData::internal_error(e.message, None))?;
-        let video = cache.join("visual_proxy.mp4");
-        let scenes = if video.exists() {
+        let scenes = if let Some(video) = cached_visual_source(&cache, &video_info) {
             avr_core::frames::detect_scene_hints(&ffmpeg, &video, &self.ctx.config)
                 .await
                 .unwrap_or_default()
@@ -242,18 +246,27 @@ impl AvrMcpServer {
         &self,
         Parameters(p): Parameters<ExtractFramesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (_, cache) = match resolve_item_cache(&self.ctx, &p.media_key) {
+        let (key, cache) = match resolve_item_cache(&self.ctx, &p.media_key) {
             Ok(v) => v,
             Err(e) => return Ok(error_json(e.code.as_str(), e.message, &e.hint)),
         };
         let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
             .map_err(|e| rmcp::ErrorData::internal_error(e.message, None))?;
-        let video = cache.join("visual_proxy.mp4");
-        if !video.exists() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                r#"{"error":true,"message":"无视觉源"}"#,
-            )]));
-        }
+        let result = load_result(&self.ctx, &key)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.message, None))?;
+        let Some(result) = result else {
+            return Ok(error_json("CACHE_MISSING", "未找到缓存", "先分析此媒体。"));
+        };
+        let video = match self.ensure_visual_source(&result).await {
+            Ok(video) => video,
+            Err(message) => {
+                return Ok(error_json(
+                    "FRAME_UNAVAILABLE",
+                    message,
+                    "检查视频来源和网络。",
+                ))
+            }
+        };
         let delivery = match p.delivery.as_str() {
             "inline" => avr_core::frames::FrameDelivery::Inline,
             "both" => avr_core::frames::FrameDelivery::Both,
@@ -376,12 +389,38 @@ impl AvrMcpServer {
         Ok(CallToolResult::success(content))
     }
 
+    async fn ensure_visual_source(
+        &self,
+        result: &avr_core::models::AnalyzeResult,
+    ) -> Result<PathBuf, String> {
+        if let Some(path) = visual_source(result) {
+            return Ok(path);
+        }
+        if result.video.platform == avr_core::models::Platform::Local {
+            return Err("本地视频已不存在，请重新分析当前文件".into());
+        }
+        let ff = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
+            .map_err(|e| e.format_user())?;
+        let downloader =
+            avr_core::extract::ytdlp::YtDlpExtractor::new(&self.ctx.root, &self.ctx.config)
+                .map_err(|e| e.format_user())?;
+        avr_core::frames::resolve_visual_source(
+            &downloader,
+            &ff,
+            &result.video.url,
+            Path::new(&result.cache_dir),
+            0.0,
+        )
+        .await
+        .map_err(|e| e.format_user())
+    }
+
     /// 读取（必要时计算并缓存）板书帧。
     async fn board_frames(
         &self,
         result: &avr_core::models::AnalyzeResult,
     ) -> Result<Vec<avr_core::keyframes::Keyframe>, String> {
-        let video = visual_source(result).ok_or_else(|| "没有可用的视频画面源".to_string())?;
+        let video = self.ensure_visual_source(result).await?;
         let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
             .map_err(|e| e.format_user())?;
         avr_core::keyframes::load_or_compute(
@@ -431,7 +470,7 @@ impl AvrMcpServer {
             }
         };
         let cache = PathBuf::from(&result.cache_dir);
-        let source = visual_source(result).ok_or_else(|| "没有可用的视频画面源".to_string())?;
+        let source = self.ensure_visual_source(result).await?;
         let ffmpeg = avr_core::ffmpeg::FfmpegContext::resolve(&self.ctx.root, &self.ctx.config)
             .map_err(|e| e.format_user())?;
         let kf = &self.ctx.config.keyframes;
@@ -448,13 +487,14 @@ impl AvrMcpServer {
             .map_err(|e| e.format_user())?;
         let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
         use base64::Engine as _;
+        let dimensions = imagesize::blob_size(&bytes).map_err(|e| e.to_string())?;
         let frame = CapturedFrame {
             time,
             path: path.display().to_string(),
             file_uri: avr_core::paths::to_file_uri(&path),
             markdown: String::new(),
-            width: long,
-            height: 0,
+            width: dimensions.width as u32,
+            height: dimensions.height as u32,
             base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
         };
         Ok(Captured {

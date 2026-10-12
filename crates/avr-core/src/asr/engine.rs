@@ -13,12 +13,14 @@ use crate::tools::registry::ToolRegistry;
 use crate::asr::presets;
 
 pub fn preset_ready(root: &DataRoot, cfg: &AppConfig, preset_id: &str) -> bool {
-    let preset = presets::get_preset(preset_id);
+    if !presets::is_supported(preset_id) {
+        return false;
+    }
     let reg = ToolRegistry::new(root, cfg);
     if reg.whisper_cli_path().is_err() {
         return false;
     }
-    let model = resolve_model(root, cfg, &preset);
+    let model = reg.whisper_model_path();
     model.exists()
 }
 
@@ -29,10 +31,13 @@ pub async fn run_preset(
     audio: &Path,
     language: &str,
 ) -> Result<Vec<TranscriptSegment>, AvrError> {
+    if !presets::is_supported(preset_id) {
+        return Err(asr_failed("不支持的 ASR preset"));
+    }
     let preset = presets::get_preset(preset_id);
     let reg = ToolRegistry::new(root, cfg);
     let cli = reg.whisper_cli_path()?;
-    let model = resolve_model(root, cfg, &preset);
+    let model = reg.whisper_model_path();
     if !model.exists() {
         return Err(no_transcript_asr_not_configured());
     }
@@ -71,16 +76,6 @@ pub fn finish(mut segments: Vec<TranscriptSegment>, language: &str) -> Vec<Trans
         }
     }
     super::postprocess::postprocess(segments)
-}
-
-fn resolve_model(root: &DataRoot, cfg: &AppConfig, _preset: &super::presets::Preset) -> PathBuf {
-    if !cfg.tools.whisper_model_path.is_empty() {
-        return PathBuf::from(&cfg.tools.whisper_model_path);
-    }
-    if !cfg.asr.model_path.is_empty() {
-        return PathBuf::from(&cfg.asr.model_path);
-    }
-    super::presets::default_model_path(&root.models_dir())
 }
 
 #[cfg(test)]

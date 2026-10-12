@@ -23,6 +23,8 @@ sha2.workspace = true
 zip.workspace = true
 futures-util.workspace = true
 base64 = { workspace = true }
+tempfile = "3"
+imagesize = "0.13"
 fs4 = { version = "0.13", features = ["sync"] }
 
 [features]
@@ -37,5 +39,5 @@ windows = { version = "0.58", features = [
     "Win32_System_Console",
 ] }
 
-[dev-dependencies]
-tempfile = "3"
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

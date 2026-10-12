@@ -230,11 +230,15 @@ pub fn frame_ref(result: &AnalyzeResult, n: usize) -> Result<FrameRef, IndexErro
     let secs = sections(result);
     let s = secs.get(n).ok_or(IndexError::FrameOutOfRange(n))?;
     let seg = &segments(result)[s.first_segment];
-    Ok(FrameRef {
+    Ok(section_frame_ref(&result.media_key, n, seg))
+}
+
+fn section_frame_ref(key: &str, n: usize, seg: &avr_core::models::TranscriptSegment) -> FrameRef {
+    FrameRef {
         n,
         time: (seg.start + seg.end) / 2.0,
-        resource_uri: frame_uri(&result.media_key, n),
-    })
+        resource_uri: frame_uri(key, n),
+    }
 }
 
 fn source_str(s: TranscriptSource) -> &'static str {
@@ -248,8 +252,10 @@ fn source_str(s: TranscriptSource) -> &'static str {
 pub fn summary_index(result: &AnalyzeResult) -> Value {
     let trans = result.transcript.as_ref();
     let secs = sections(result);
-    let frames: Vec<FrameRef> = (0..secs.len())
-        .filter_map(|n| frame_ref(result, n).ok())
+    let frames: Vec<FrameRef> = secs
+        .iter()
+        .enumerate()
+        .map(|(n, s)| section_frame_ref(&result.media_key, n, &segments(result)[s.first_segment]))
         .collect();
     json!({
         "media_key": result.media_key,
@@ -300,6 +306,9 @@ pub fn read_transcript(
     max_chars: usize,
 ) -> Result<TranscriptPage, IndexError> {
     let segs = segments(result);
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+        return Err(IndexError::BadCursor);
+    }
     if result.transcript.is_none() {
         return Err(IndexError::NoTranscript);
     }

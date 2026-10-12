@@ -1,11 +1,12 @@
 //! 可追溯的图文素材包。只导出采样和已有转写，不生成未经证实的解释。
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 
 use crate::error::{process_failed, AvrError};
 use crate::ffmpeg::{probe_media, FfmpegContext};
@@ -46,20 +47,7 @@ pub fn escape_html(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-pub fn sha256(path: &Path) -> Result<String, AvrError> {
-    let mut file = std::fs::File::open(path).map_err(|e| process_failed(&e.to_string()))?;
-    let mut hash = Sha256::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n =
-            std::io::Read::read(&mut file, &mut buf).map_err(|e| process_failed(&e.to_string()))?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
-}
+pub use crate::storage::sha256;
 
 pub async fn build_packet(
     ctx: &PipelineContext,
@@ -128,7 +116,14 @@ pub async fn build_packet(
     clamp_automatic_times(&mut times, &options.times, &probe);
     let times = validate_times(&times, probe.duration)?;
     std::fs::create_dir_all(output).map_err(|e| process_failed(&e.to_string()))?;
-    let output = std::fs::canonicalize(output).map_err(|e| process_failed(&e.to_string()))?;
+    let destination = std::fs::canonicalize(output).map_err(|e| process_failed(&e.to_string()))?;
+    let staging = tempfile::tempdir_in(
+        destination
+            .parent()
+            .ok_or_else(|| process_failed("不能导出到文件系统根目录"))?,
+    )
+    .map_err(|e| process_failed(&e.to_string()))?;
+    let output = staging.path();
     let frames = extract_frames(
         &ff,
         &source,
@@ -156,20 +151,23 @@ pub async fn build_packet(
         probe.duration,
         frames.len()
     );
-    let mut html = format!(
+    let mut html_file =
+        tempfile::NamedTempFile::new_in(output).map_err(|e| process_failed(&e.to_string()))?;
+    let mut html = std::io::BufWriter::new(&mut html_file);
+    write!(html,
         "<!doctype html><html lang=zh><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{}</title><style>body{{max-width:1100px;margin:auto;padding:24px;font:17px/1.7 system-ui}}img{{max-width:100%;height:auto}}figure{{margin:1.5em 0}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}a{{color:#164d84}}</style><h1>{}</h1><p>{:.3} 秒 · {} 张截图</p><p>采样覆盖不等于逐帧语义分析；转写与画面均为待核实的原始资料。</p>",
         escape_html(&title),
         escape_html(&title),
         probe.duration,
         frames.len()
-    );
+    ).map_err(|e| process_failed(&e.to_string()))?;
     for w in &warnings {
         md.push_str(&format!("> {}\n\n", w.replace('\n', " ")));
-        html.push_str(&format!("<p>{}</p>", escape_html(w)));
+        write!(html, "<p>{}</p>", escape_html(w)).map_err(|e| process_failed(&e.to_string()))?;
     }
     if let Some(t) = transcript {
         md.push_str("## 语音转写（未校对）\n\n");
-        html.push_str("<h2>语音转写（未校对）</h2>");
+        write!(html, "<h2>语音转写（未校对）</h2>").map_err(|e| process_failed(&e.to_string()))?;
         for s in &t.segments {
             md.push_str(&format!(
                 "> [{:.3}–{:.3}s] {}\n\n",
@@ -177,57 +175,55 @@ pub async fn build_packet(
                 s.end,
                 s.text.replace('\n', " ")
             ));
-            html.push_str(&format!(
+            write!(
+                html,
                 "<p><b>{:.3}–{:.3}s</b> {}</p>",
                 s.start,
                 s.end,
                 escape_html(&s.text)
-            ));
+            )
+            .map_err(|e| process_failed(&e.to_string()))?;
         }
     }
     md.push_str("## 全片截图\n\n");
-    html.push_str("<h2>全片截图</h2>");
+    write!(html, "<h2>全片截图</h2>").map_err(|e| process_failed(&e.to_string()))?;
     let mut entries = Vec::new();
     for f in &frames {
         let name = Path::new(&f.path).file_name().unwrap().to_string_lossy();
         let relative = format!("images/{name}");
         let bytes = std::fs::read(&f.path).map_err(|e| process_failed(&e.to_string()))?;
-        let height = if f.height == 0 {
-            probe.height
-        } else {
-            f.height
-        };
-        let width = if f.width == 0 { probe.width } else { f.width };
+        let height = f.height;
+        let width = f.width;
         md.push_str(&format!(
             "### {:.3} 秒\n\n![原视频 {:.3} 秒]({})\n\n",
             f.time, f.time, relative
         ));
-        html.push_str(&format!(
+        write!(html,
             "<figure><img loading=lazy alt='原视频 {:.3} 秒' src='data:image/jpeg;base64,{}'><figcaption>{:.3} 秒 · {} × {}</figcaption></figure>",
             f.time,
             STANDARD.encode(&bytes),
             f.time,
             width,
             height
-        ));
+        ).map_err(|e| process_failed(&e.to_string()))?;
         entries.push(serde_json::json!({
             "time": f.time,
             "path": relative,
             "width": width,
             "height": height,
-            "sha256": sha256(Path::new(&f.path))?
+            "sha256": format!("{:x}", sha2::Sha256::digest(&bytes))
         }));
     }
-    html.push_str("</html>");
+    write!(html, "</html>").map_err(|e| process_failed(&e.to_string()))?;
+    html.flush().map_err(|e| process_failed(&e.to_string()))?;
+    drop(html);
     let max_gap = times.windows(2).map(|p| p[1] - p[0]).fold(0.0, f64::max);
-    let model_fp = {
-        let path = ctx.config.tools.whisper_model_path.trim();
-        if path.is_empty() {
-            None
-        } else {
-            crate::fingerprint::content_fingerprint(Path::new(path))
-        }
-    };
+    let model_fp = analysis.as_ref().and_then(|a| {
+        crate::cache::load_cached_transcript(Path::new(&a.cache_dir), None)
+            .ok()
+            .flatten()
+            .and_then(|(_, _, meta)| (meta.source == "asr").then_some(meta.asr_model))
+    });
     let manifest = serde_json::json!({
         "schema_version": 1,
         "source_filename": title,
@@ -253,11 +249,17 @@ pub async fn build_packet(
         "frames": entries
     });
     write(&output.join("README.md"), md)?;
-    write(&output.join("index.html"), html)?;
+    html_file
+        .persist(output.join("index.html"))
+        .map_err(|e| process_failed(&e.to_string()))?;
     write(
         &output.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).map_err(|e| process_failed(&e.to_string()))?,
     )?;
+    // 非空目标不会被覆盖；失败或取消时临时目录自动清理，可原命令重试。
+    std::fs::remove_dir(&destination).map_err(|e| process_failed(&e.to_string()))?;
+    std::fs::rename(output, &destination).map_err(|e| process_failed(&e.to_string()))?;
+    let output = destination;
     Ok(serde_json::json!({
         "output": output,
         "html": output.join("index.html"),

@@ -24,3 +24,5 @@ pub mod tools;
 pub const VERSION: &str = "2.0.0";
 
 pub use error::{unsupported_url, AvrError, ErrorCode};
+
+pub mod storage;

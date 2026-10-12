@@ -104,7 +104,7 @@ python tools/install-to-e-drive.py
 python tools/enable-whisper-gpu.py
 
 # 3. 复制配置模板到数据根并编辑路径
-copy config.toml.example E:\AIVideoReader\config.toml
+if (!(Test-Path E:\AIVideoReader\config.toml)) { copy config.toml.example E:\AIVideoReader\config.toml }
 ```
 
 `config.toml` 中路径请使用正斜杠（`E:/ffmpeg/...`），避免 TOML 将 `\f` 解析为转义。
@@ -114,11 +114,8 @@ copy config.toml.example E:\AIVideoReader\config.toml
 抖音需 Netscape 格式 Cookie 文件，且 `user_agent` **必须与导出 Cookie 的浏览器 UA 一致**（Chrome/Edge/Cursor 各不相同）。
 
 ```powershell
-# 浏览器打开视频页后，用 document.cookie 字符串刷新（保留 HttpOnly 的 ttwid）
-python tools/refresh-douyin-cookies.py "<document.cookie 字符串>"
-
-# 或从 JSON 文件读取
-python tools/refresh-douyin-from-json.py cookie-refresh.json
+# 从本地 JSON 文件读取，避免将 Cookie 放入子进程命令行
+python tools/refresh-douyin-from-json.py cookie-refresh.json --output E:/AIVideoReader/cookies/douyin.txt
 ```
 
 Cookie 写入 `E:\AIVideoReader\cookies\douyin.txt`（已在 `.gitignore` 排除，**勿提交 Git**）。
@@ -131,9 +128,11 @@ avr.exe analyze "https://v.douyin.com/xxxx/"
 ## 开发
 
 ```powershell
-cargo test -p avr-core
-cargo clippy -- -D warnings
+python tools/check.py
+cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+当前职责、缓存兼容和验证边界见 [工程边界](docs/architecture/engineering.md)。
 
 ## Legacy
 

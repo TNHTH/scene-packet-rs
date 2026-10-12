@@ -73,12 +73,27 @@ impl ToolRegistry {
 
     pub fn tool_status(&self, id: ToolId) -> ToolStatus {
         let path_result = self.tool_path(id);
-        let ok = path_result.is_ok();
         let path = path_result.ok();
-        let version = path.as_ref().and_then(|p| detect::detect_version(p).ok());
+        let version = path
+            .as_ref()
+            .and_then(|p| detect::detect_tool_version(p, id).ok());
         ToolStatus {
             id,
-            ready: ok,
+            ready: version.is_some(),
+            path,
+            version,
+        }
+    }
+
+    pub async fn tool_status_async(&self, id: ToolId) -> ToolStatus {
+        let path = self.tool_path(id).ok();
+        let version = match &path {
+            Some(p) => detect::detect_tool_version_async(p, id).await.ok(),
+            None => None,
+        };
+        ToolStatus {
+            id,
+            ready: version.is_some(),
             path,
             version,
         }

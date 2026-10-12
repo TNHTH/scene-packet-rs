@@ -1,10 +1,8 @@
 //! 媒体来源与 media_key 规则。
 
-use std::fs::File;
 use std::sync::LazyLock;
 
 use regex::Regex;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -14,8 +12,6 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::error::AvrError;
 use crate::extract::platform::{detect_platform, Platform};
 use crate::models::Platform as ModelPlatform;
-
-const FINGERPRINT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -74,8 +70,15 @@ pub fn platform_media_id(url: &str) -> Option<String> {
 
     match platform {
         Platform::Bilibili => {
-            if let Some(bv) = regex_bv(&lower) {
-                return Some(format!("bilibili:{bv}"));
+            if let Some(bv) = regex_bv(&normalized) {
+                let parsed = Url::parse(&normalized).ok()?;
+                let page = parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "p")
+                    .and_then(|(_, v)| v.parse::<u64>().ok())
+                    .filter(|p| *p > 0)
+                    .unwrap_or(1);
+                return Some(format!("bilibili:{bv}:p{page}"));
             }
         }
         Platform::Douyin => {
@@ -87,14 +90,18 @@ pub fn platform_media_id(url: &str) -> Option<String> {
     None
 }
 
-static BV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"bv[0-9a-z]+").expect("valid regex"));
+static BV_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/video/((?i:bv)[0-9A-Za-z]+)").expect("valid regex"));
 static DOUYIN_VIDEO_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/video/(\d+)").expect("valid regex"));
 static DOUYIN_MODAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"modal_id=(\d+)").expect("valid regex"));
 
 fn regex_bv(s: &str) -> Option<String> {
-    BV_RE.find(s).map(|m| m.as_str().to_uppercase())
+    BV_RE
+        .captures(s)
+        .and_then(|c| c.get(1))
+        .map(|m| format!("BV{}", &m.as_str()[2..]))
 }
 
 fn regex_douyin_id(s: &str) -> Option<String> {
@@ -171,21 +178,11 @@ pub fn media_key(source: &MediaSource, duration: Option<f64>) -> Result<String, 
             }
         }
         MediaSource::LocalFile { path } => {
-            let meta = std::fs::metadata(path).map_err(io_to_avr)?;
-            let size = meta.len();
-            let fp = file_fingerprint(path).map_err(io_to_avr)?;
-            let dur = duration.unwrap_or(0.0);
-            let seed = format!("{fp:x}:{size}:{dur:.3}");
-            Ok(format!("local-{:016x}", xxh3_64(seed.as_bytes())))
+            // 完整内容身份；时长探测失败或同文件复制不应改变缓存身份。
+            let _ = duration;
+            Ok(format!("local-{}", crate::storage::sha256(path)?))
         }
     }
-}
-
-fn file_fingerprint(path: &Path) -> Result<u64, std::io::Error> {
-    let mut file = File::open(path)?;
-    let mut buf = vec![0u8; FINGERPRINT_BYTES];
-    let n = file.read(&mut buf)?;
-    Ok(xxh3_64(&buf[..n]))
 }
 
 pub fn to_model_platform(p: Platform) -> ModelPlatform {
@@ -193,14 +190,6 @@ pub fn to_model_platform(p: Platform) -> ModelPlatform {
         Platform::Bilibili => ModelPlatform::Bilibili,
         Platform::Douyin => ModelPlatform::Douyin,
     }
-}
-
-fn io_to_avr(e: std::io::Error) -> AvrError {
-    AvrError::new(
-        crate::error::ErrorCode::IoError,
-        e.to_string(),
-        "读取文件元数据失败。",
-    )
 }
 
 #[cfg(test)]

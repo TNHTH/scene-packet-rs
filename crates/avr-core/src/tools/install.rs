@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use reqwest::Client;
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tracing::info;
 
@@ -15,31 +14,145 @@ pub async fn download_and_install(
     manifest: &ToolManifest,
     data_root: &Path,
 ) -> Result<PathBuf, AvrError> {
+    validate_relative(&manifest.install_dir)?;
     let install_dir = data_root.join(&manifest.install_dir);
-    std::fs::create_dir_all(&install_dir).map_err(io_err)?;
-
-    let tmp_dir = data_root.join("logs").join("install-tmp");
-    std::fs::create_dir_all(&tmp_dir).map_err(io_err)?;
-
-    let archive_path = tmp_dir.join(format!("{}.part", manifest.id));
+    let parent = install_dir
+        .parent()
+        .ok_or_else(|| install_error("安装目录无父目录"))?;
+    std::fs::create_dir_all(parent).map_err(io_err)?;
+    let _lock = crate::jobs::FileLock::try_acquire(&parent.join(format!(
+        ".{}.install.lock",
+        install_dir.file_name().unwrap().to_string_lossy()
+    )))?;
+    let work = tempfile::Builder::new()
+        .prefix(".install-")
+        .tempdir_in(parent)
+        .map_err(io_err)?;
+    let archive_path = work.path().join("download");
     download_file(&manifest.url, &archive_path).await?;
     verify_sha256(&archive_path, &manifest.sha256)?;
-
-    let result = match &manifest.archive_layout {
-        ArchiveLayout::SingleExe { path } => {
-            let dest = install_dir.join(path);
-            atomic_copy(&archive_path, &dest)?;
-            dest
+    let stage = work.path().join("stage");
+    std::fs::create_dir(&stage).map_err(io_err)?;
+    if install_dir.exists() {
+        copy_existing(&install_dir, &stage)?;
+    }
+    let main = stage_archive(manifest, &archive_path, &stage)?;
+    let backup = work.path().join("backup");
+    let had_previous = install_dir.exists();
+    if had_previous {
+        std::fs::rename(&install_dir, &backup).map_err(io_err)?;
+    }
+    if let Err(error) = std::fs::rename(&stage, &install_dir) {
+        if had_previous {
+            if let Err(rollback) = std::fs::rename(&backup, &install_dir) {
+                let retained = work.keep();
+                return Err(install_error(&format!(
+                    "安装发布失败: {error}；恢复失败: {rollback}；旧安装保留在 {}",
+                    retained.join("backup").display()
+                )));
+            }
         }
-        ArchiveLayout::ZipExtract { entries } => {
-            extract_zip_entries(&archive_path, &install_dir, entries)?;
-            install_dir.join(&entries[0])
-        }
-    };
-
-    std::fs::remove_file(&archive_path).ok();
+        return Err(io_err(error));
+    }
+    let result = install_dir.join(main);
     info!("已安装 {} -> {}", manifest.id, result.display());
     Ok(result)
+}
+
+fn install_error(message: &str) -> AvrError {
+    AvrError::new(
+        ErrorCode::ToolNotReady,
+        message,
+        "已有安装保持不变；检查清单或重试。",
+    )
+}
+fn validate_relative(value: &str) -> Result<(), AvrError> {
+    if value.is_empty()
+        || value.contains(['\\', ':'])
+        || Path::new(value)
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(install_error("安装清单路径必须为相对路径"));
+    }
+    Ok(())
+}
+fn copy_existing(from: &Path, to: &Path) -> Result<(), AvrError> {
+    for entry in std::fs::read_dir(from).map_err(io_err)? {
+        let entry = entry.map_err(io_err)?;
+        let kind = entry.file_type().map_err(io_err)?;
+        let dest = to.join(entry.file_name());
+        if kind.is_symlink() {
+            return Err(install_error("工具目录含符号链接，请手动处理后安装"));
+        }
+        if kind.is_dir() {
+            std::fs::create_dir(&dest).map_err(io_err)?;
+            copy_existing(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), dest).map_err(io_err)?;
+        }
+    }
+    Ok(())
+}
+fn stage_archive(
+    manifest: &ToolManifest,
+    archive: &Path,
+    stage: &Path,
+) -> Result<PathBuf, AvrError> {
+    match &manifest.archive_layout {
+        ArchiveLayout::SingleExe { path } => {
+            validate_relative(path)?;
+            let destination = stage.join(path);
+            std::fs::create_dir_all(destination.parent().unwrap()).map_err(io_err)?;
+            std::fs::copy(archive, destination).map_err(io_err)?;
+            Ok(path.into())
+        }
+        ArchiveLayout::ZipExtract { entries } => {
+            let first = entries
+                .first()
+                .ok_or_else(|| install_error("安装清单未声明输出"))?;
+            for entry in entries {
+                validate_relative(entry)?;
+            }
+            extract_zip_entries(archive, stage, entries)?;
+            // Whisper 随包 DLL 也是运行时的一部分，不能只抽取两项。
+            if manifest.id.starts_with("whisper") {
+                extract_runtime_files(archive, stage)?;
+            }
+            Ok(first.into())
+        }
+    }
+}
+
+fn extract_runtime_files(path: &Path, dest: &Path) -> Result<(), AvrError> {
+    let mut archive =
+        zip::ZipArchive::new(std::fs::File::open(path).map_err(io_err)?).map_err(zip_err)?;
+    let mut names = std::collections::HashSet::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(zip_err)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let normalized = entry.name().replace('\\', "/");
+        let path = Path::new(&normalized);
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "exe" | "dll") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .ok_or_else(|| install_error("无效运行时文件名"))?;
+        if !names.insert(name.to_ascii_lowercase()) {
+            return Err(install_error("压缩包存在重名运行时文件"));
+        }
+        let mut file = std::fs::File::create(dest.join(name)).map_err(io_err)?;
+        std::io::copy(&mut entry, &mut file).map_err(io_err)?;
+    }
+    Ok(())
 }
 
 async fn download_file(url: &str, dest: &Path) -> Result<(), AvrError> {
@@ -72,9 +185,7 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), AvrError> {
     if expected.is_empty() {
         return Ok(());
     }
-    let data = std::fs::read(path).map_err(io_err)?;
-    let hash = Sha256::digest(&data);
-    let got = format!("{hash:x}");
+    let got = crate::storage::sha256(path)?;
     if got != expected.to_lowercase() {
         return Err(AvrError::new(
             ErrorCode::ToolNotReady,
@@ -91,7 +202,8 @@ fn extract_zip_entries(
     entry_names: &[String],
 ) -> Result<(), AvrError> {
     let file = std::fs::File::open(zip_path).map_err(io_err)?;
-    let mut archive = zip::ZipArchive::new(file).map_err(zip_err)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| AvrError::new(ErrorCode::ToolNotReady, e.to_string(), "压缩包损坏。"))?;
 
     for want in entry_names {
         let want_base = Path::new(want)
@@ -114,10 +226,9 @@ fn extract_zip_entries(
             if let Some(parent) = out_path.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            let part = out_path.with_extension("part");
-            let mut out = std::fs::File::create(&part).map_err(io_err)?;
+            let mut out = std::fs::File::create(&out_path).map_err(io_err)?;
             std::io::copy(&mut entry, &mut out).map_err(io_err)?;
-            atomic_rename(&part, &out_path)?;
+
             found = true;
             break;
         }
@@ -132,32 +243,14 @@ fn extract_zip_entries(
     Ok(())
 }
 
-fn atomic_copy(from: &Path, to: &Path) -> Result<(), AvrError> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent).map_err(io_err)?;
-    }
-    let part = to.with_extension("part");
-    std::fs::copy(from, &part).map_err(io_err)?;
-    atomic_rename(&part, to)?;
-    Ok(())
-}
-
-fn atomic_rename(from: &Path, to: &Path) -> Result<(), AvrError> {
-    if to.exists() {
-        std::fs::remove_file(to).map_err(io_err)?;
-    }
-    std::fs::rename(from, to).map_err(io_err)?;
-    Ok(())
-}
-
 fn io_err(e: std::io::Error) -> AvrError {
-    AvrError::io(e, "检查磁盘权限。")
+    AvrError::new(ErrorCode::IoError, e.to_string(), "检查磁盘权限。")
 }
 
 fn net_err(e: reqwest::Error) -> AvrError {
-    AvrError::new(ErrorCode::NetworkError, "网络请求失败", "检查网络连接。").with_source(e)
+    AvrError::new(ErrorCode::NetworkError, e.to_string(), "检查网络连接。")
 }
 
 fn zip_err(e: zip::result::ZipError) -> AvrError {
-    AvrError::new(ErrorCode::ToolNotReady, "解压失败", "压缩包损坏。").with_source(e)
+    AvrError::new(ErrorCode::ToolNotReady, e.to_string(), "压缩包损坏。")
 }

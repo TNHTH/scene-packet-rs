@@ -80,7 +80,7 @@ def download_and_transcribe(url: str, out_dir: Path) -> Path | None:
         [
             str(YTDLP),
             "--cookies",
-            str(COKIES),
+            str(COOKIES),
             "--user-agent",
             UA,
             "-o",

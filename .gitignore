@@ -20,3 +20,7 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Tauri 根据构建宿主生成的 schema（已有历史文件保留）
+/desktop/src-tauri/gen/schemas/linux-schema.json
+/tools/**/__pycache__/

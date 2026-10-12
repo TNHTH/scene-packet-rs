@@ -24,11 +24,11 @@ fn vtt_parses_distinct_cues() {
 #[test]
 fn url_identity_uses_bv_and_strips_tracking() {
     let key = |s: &str| media_key(&MediaSource::Url { url: s.into() }, None).unwrap();
-    assert_eq!(
+    assert_ne!(
         key("https://www.bilibili.com/video/BV1AbCd?p=1"),
         key("https://www.bilibili.com/video/BV1AbCd?p=2")
     );
-    assert_eq!(
+    assert_ne!(
         key("https://www.bilibili.com/video/BV1AbCd"),
         key("https://www.bilibili.com/video/BV1aBcD")
     );
