@@ -605,7 +605,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(first.media_key, second.media_key);
-        assert_eq!(second.video.url, b.display().to_string());
+        assert_eq!(
+            second.video.url,
+            std::fs::canonicalize(&b).unwrap().display().to_string()
+        );
         assert_eq!(fake.transcribe_calls.load(Ordering::SeqCst), 1);
     }
 
