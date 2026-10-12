@@ -8,6 +8,10 @@ pub struct Preset {
     pub label: &'static str,
 }
 
+pub fn is_supported(id: &str) -> bool {
+    matches!(id, "whisper-cpp-cpu" | "whisper-cpp-cublas")
+}
+
 pub fn get_preset(id: &str) -> Preset {
     match id {
         "whisper-cpp-cublas" => Preset {

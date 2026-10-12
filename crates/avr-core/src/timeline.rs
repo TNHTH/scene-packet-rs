@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use crate::models::{Transcript, TranscriptSegment, TranscriptSource};
 
 static VTT_TIME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})")
+    Regex::new(r"((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})\s*-->\s*((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})")
         .expect("valid regex")
 });
 
@@ -52,8 +52,8 @@ pub fn parse_vtt(content: &str, language: &str) -> Transcript {
             if !buffer.is_empty() {
                 let text = buffer.join(" ").trim().to_string();
                 let text = strip_tags(&text);
-                if !text.is_empty() && !seen.contains(&text) {
-                    seen.insert(text.clone());
+                if !text.is_empty() && !seen.contains(&format!("{s}:{}:{text}", end.unwrap_or(s))) {
+                    seen.insert(format!("{s}:{}:{text}", end.unwrap_or(s)));
                     segments.push(TranscriptSegment {
                         start: s,
                         end: end.unwrap_or(s),
@@ -109,7 +109,8 @@ pub fn parse_vtt(content: &str, language: &str) -> Transcript {
 
 pub fn parse_srt(content: &str, language: &str) -> Transcript {
     let mut segments = Vec::new();
-    for block in content.trim().split("\n\n") {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    for block in normalized.trim().split("\n\n") {
         let lines: Vec<&str> = block.lines().collect();
         if lines.len() < 2 {
             continue;
@@ -203,10 +204,14 @@ fn parse_srt_ts(ts: &str) -> f64 {
 }
 
 fn fmt_ts(seconds: f64) -> String {
-    let h = (seconds / 3600.0).floor() as u32;
-    let m = ((seconds % 3600.0) / 60.0).floor() as u32;
-    let s = seconds % 60.0;
-    format!("{h:02}:{m:02}:{s:06.3}").replace('.', ",")
+    let ms = (seconds.max(0.0) * 1000.0).round() as u64;
+    format!(
+        "{:02}:{:02}:{:02},{:03}",
+        ms / 3_600_000,
+        ms / 60_000 % 60,
+        ms / 1000 % 60,
+        ms % 1000
+    )
 }
 
 pub fn format_timestamp(seconds: f64) -> String {

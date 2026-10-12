@@ -1,52 +1,34 @@
 //! 平台检测（零网络，1:1 移植 V1）。
 
-use regex::Regex;
-use std::sync::LazyLock;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Bilibili,
     Douyin,
 }
 
-static BILI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        r"bilibili\.com/video/",
-        r"b23\.tv/",
-        r"bilibili\.com/bangumi/",
-    ]
-    .iter()
-    .map(|p| Regex::new(p).expect("valid regex"))
-    .collect()
-});
-
-static DOUYIN_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [r"douyin\.com", r"v\.douyin\.com", r"iesdouyin\.com"]
-        .iter()
-        .map(|p| Regex::new(p).expect("valid regex"))
-        .collect()
-});
-
-pub fn detect_platform(url: &str) -> Option<Platform> {
-    let lower = url.to_lowercase();
-    let trimmed = lower.trim();
-    let full = if trimmed.contains("://") {
-        trimmed.to_string()
+pub fn detect_platform(input: &str) -> Option<Platform> {
+    let input = input.trim();
+    let full = if input.contains("://") {
+        input.to_owned()
     } else {
-        format!("https://{trimmed}")
+        format!("https://{input}")
     };
-
-    for pat in BILI_PATTERNS.iter() {
-        if pat.is_match(&full) {
-            return Some(Platform::Bilibili);
-        }
+    let url = url::Url::parse(&full).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
     }
-    for pat in DOUYIN_PATTERNS.iter() {
-        if pat.is_match(&full) {
-            return Some(Platform::Douyin);
-        }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let belongs = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    if belongs("b23.tv")
+        || (belongs("bilibili.com")
+            && (url.path().starts_with("/video/") || url.path().starts_with("/bangumi/")))
+    {
+        Some(Platform::Bilibili)
+    } else if belongs("douyin.com") || belongs("iesdouyin.com") {
+        Some(Platform::Douyin)
+    } else {
+        None
     }
-    None
 }
 
 pub fn is_supported(url: &str) -> bool {

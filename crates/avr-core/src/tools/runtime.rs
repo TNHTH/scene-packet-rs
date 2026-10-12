@@ -125,7 +125,7 @@ impl Tools for RealTools {
         asr.is_ready(&preset).then_some(preset)
     }
 
-    /// 以可执行文件的内容指纹（大小 + 头尾 xxh3）作为版本：
+    /// 以可执行文件的完整 SHA-256 内容指纹作为版本：
     /// 换版本即失效；重装或复制同一个二进制不失效。
     fn version(&self, ctx: &PipelineContext, id: ToolId) -> Option<String> {
         let path = ToolRegistry::new(&ctx.root, &ctx.config)

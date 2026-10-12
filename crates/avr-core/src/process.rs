@@ -1,19 +1,12 @@
-//! 统一子进程执行器（唯一允许 spawn 的模块）。
-
+//! 子进程参数直传，并发排空输出，取消和超时回收进程。
+use crate::error::{process_failed, AvrError};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
-
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
-use tokio::time::timeout;
-use tracing::debug;
-
-use crate::error::{process_failed, AvrError, ErrorCode};
-
 const MAX_STDOUT: usize = 4 * 1024 * 1024;
 const MAX_STDERR: usize = 1024 * 1024;
-
 #[derive(Debug, Clone)]
 pub struct ProcessRequest {
     pub program: PathBuf,
@@ -22,140 +15,122 @@ pub struct ProcessRequest {
     pub timeout: Option<Duration>,
     pub expected_outputs: Vec<PathBuf>,
 }
-
 #[derive(Debug, Clone)]
 pub struct ProcessOutput {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
 }
-
-/// 执行子进程；参数数组直传，禁止 shell 拼接。
+async fn drain(mut stream: impl AsyncRead + Unpin, limit: usize) -> std::io::Result<Vec<u8>> {
+    let mut retained = Vec::new();
+    let mut buf = [0; 8192];
+    loop {
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(retained);
+        }
+        let keep = n.min(limit.saturating_sub(retained.len()));
+        retained.extend_from_slice(&buf[..keep]);
+        // 超过保留上限仍排空，避免子进程因管道满而无法退出。
+    }
+}
+struct ProcessTree(u32);
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        // 子进程独占进程组；只向本次创建的组发送信号。
+        unsafe {
+            libc::kill(-(self.0 as i32), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &self.0.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
 pub async fn run(req: &ProcessRequest) -> Result<ProcessOutput, AvrError> {
-    debug!("spawn: {} {}", req.program.display(), req.args.join(" "));
-
-    let mut cmd = Command::new(&req.program);
-    cmd.args(&req.args)
+    let mut command = Command::new(&req.program);
+    command
+        .args(&req.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
     if let Some(cwd) = &req.cwd {
-        cmd.current_dir(cwd);
+        command.current_dir(cwd);
     }
-
-    #[cfg(windows)]
-    assign_job_object(&mut cmd);
-
-    let child = cmd
+    let mut child = command
         .spawn()
-        .map_err(|e| process_failed(&format!("无法启动 {}: {}", req.program.display(), e)))?;
-
-    #[cfg_attr(not(windows), allow(unused_variables))]
-    let pid = child.id();
-
-    let run_inner = async {
-        let mut child = child;
-        let mut stdout = child.stdout.take().expect("stdout");
-        let mut stderr = child.stderr.take().expect("stderr");
-
-        let (mut out_buf, mut err_buf) = (Vec::new(), Vec::new());
-        let (mut out_tmp, mut err_tmp) = ([0u8; 8192], [0u8; 8192]);
-
-        while out_buf.len() < MAX_STDOUT {
-            let n = stdout.read(&mut out_tmp).await.unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            out_buf.extend_from_slice(&out_tmp[..n]);
-        }
-        while err_buf.len() < MAX_STDERR {
-            let n = stderr.read(&mut err_tmp).await.unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            err_buf.extend_from_slice(&err_tmp[..n]);
-        }
-
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| process_failed(&e.to_string()))?;
-        let code = status.code().unwrap_or(-1);
-
-        for expected in &req.expected_outputs {
-            if !expected.exists() {
-                return Err(process_failed(&format!(
-                    "预期产物不存在: {}",
-                    expected.display()
-                )));
-            }
-        }
-
-        Ok(ProcessOutput {
-            exit_code: code,
-            stdout: String::from_utf8_lossy(&out_buf).to_string(),
-            stderr: String::from_utf8_lossy(&err_buf).to_string(),
-        })
+        .map_err(|e| process_failed(&format!("无法启动 {}: {e}", req.program.display())))?;
+    let tree = ProcessTree(child.id().expect("spawned child has pid"));
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let work = async {
+        tokio::try_join!(
+            drain(stdout, MAX_STDOUT),
+            drain(stderr, MAX_STDERR),
+            child.wait()
+        )
     };
-
-    let output = if let Some(dur) = req.timeout {
-        match timeout(dur, run_inner).await {
-            Ok(r) => r?,
+    let result = match req.timeout {
+        Some(duration) => match tokio::time::timeout(duration, work).await {
+            Ok(result) => result,
             Err(_) => {
-                #[cfg(windows)]
-                if let Some(p) = pid {
-                    kill_process_tree(p);
-                }
-                return Err(AvrError::new(
-                    ErrorCode::ProcessFailed,
-                    "子进程超时",
-                    "可尝试缩短输入或增加超时。",
-                ));
+                drop(tree);
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(process_failed("子进程超时，已终止并回收"));
             }
-        }
-    } else {
-        run_inner.await?
+        },
+        None => work.await,
     };
-
-    if output.exit_code != 0 {
+    drop(tree);
+    let (stdout, stderr, status) = result.map_err(|e| process_failed(&e.to_string()))?;
+    let output = ProcessOutput {
+        exit_code: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    };
+    if !status.success() {
         return Err(process_failed(&format!(
             "exit={} stderr={}",
             output.exit_code,
-            truncate(&output.stderr, 500)
+            crate::models::truncate_utf8(&output.stderr, 2000)
         )));
     }
-
+    for path in &req.expected_outputs {
+        if !path.is_file() {
+            return Err(process_failed(&format!(
+                "预期文件不存在: {}",
+                path.display()
+            )));
+        }
+    }
     Ok(output)
 }
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
-    }
-}
-
-#[cfg(windows)]
-fn assign_job_object(cmd: &mut Command) {
-    // Job Object 在 spawn 后通过子进程继承较难做到跨 tokio；
-    // 超时/取消时使用 kill_process_tree 清理整棵树。
-    let _ = cmd;
-}
-
-#[cfg(windows)]
-fn kill_process_tree(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status();
-}
-
-/// 同步包装（供非 async 上下文测试）。
 pub fn run_blocking(req: &ProcessRequest) -> Result<ProcessOutput, AvrError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| process_failed(&format!("无法创建 tokio 运行时: {e}")))?
-        .block_on(run(req))
+    let execute = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| process_failed(&e.to_string()))?
+            .block_on(run(req))
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // 兼容同步公共 API；异步消费者应直接 await run，避免阻塞宿主。
+        std::thread::scope(|scope| {
+            scope
+                .spawn(execute)
+                .join()
+                .map_err(|_| process_failed("同步子进程执行线程异常"))?
+        })
+    } else {
+        execute()
+    }
 }

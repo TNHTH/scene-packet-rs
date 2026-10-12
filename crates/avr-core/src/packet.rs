@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::error::{process_failed, AvrError};
 use crate::ffmpeg::{probe_media, FfmpegContext};
@@ -46,20 +45,7 @@ pub fn escape_html(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-pub fn sha256(path: &Path) -> Result<String, AvrError> {
-    let mut file = std::fs::File::open(path).map_err(|e| process_failed(&e.to_string()))?;
-    let mut hash = Sha256::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n =
-            std::io::Read::read(&mut file, &mut buf).map_err(|e| process_failed(&e.to_string()))?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
-}
+pub use crate::storage::sha256;
 
 pub async fn build_packet(
     ctx: &PipelineContext,

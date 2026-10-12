@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AvrError, ErrorCode};
 use crate::root::DataRoot;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub extractor: ExtractorConfig,
@@ -140,31 +140,6 @@ fn default_hint_limit() -> u32 {
     50
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            mcp: McpConfig::default(),
-            extractor: ExtractorConfig {
-                name: default_ytdlp(),
-                cookies_from_browser: default_none(),
-                cookies_file: String::new(),
-                user_agent: String::new(),
-            },
-            asr: AsrConfig::default(),
-            keyframes: Default::default(),
-            output: OutputConfig {
-                cache_dir: String::new(),
-            },
-            tools: ToolsConfig::default(),
-            ui: UiConfig {
-                enable_transparency: true,
-                scene_threshold: 0.3,
-                visual_hint_limit: 50,
-            },
-        }
-    }
-}
-
 impl Default for ExtractorConfig {
     fn default() -> Self {
         Self {
@@ -190,9 +165,9 @@ impl Default for AsrConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            enable_transparency: true,
-            scene_threshold: 0.3,
-            visual_hint_limit: 50,
+            enable_transparency: default_true(),
+            scene_threshold: default_scene_threshold(),
+            visual_hint_limit: default_hint_limit(),
         }
     }
 }
@@ -220,7 +195,7 @@ pub fn save_config(root: &DataRoot, cfg: &AppConfig) -> Result<(), AvrError> {
     let content = toml::to_string_pretty(cfg).map_err(|e| {
         AvrError::new(ErrorCode::ConfigError, "序列化配置失败", "检查配置内容。").with_source(e)
     })?;
-    fs::write(root.config_path(), content).map_err(io_err)?;
+    crate::storage::atomic_write(&root.config_path(), content.as_bytes())?;
     Ok(())
 }
 

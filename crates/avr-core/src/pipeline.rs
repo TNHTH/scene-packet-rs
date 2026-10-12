@@ -138,7 +138,7 @@ async fn analyze_url_with(
     let key_run = key.clone();
 
     deps.jobs
-        .run_once(&key, &item_cache, || async move {
+        .run_once(&key, &item_cache, move || async move {
             run_url_pipeline(
                 &ctx_clone,
                 &deps_clone,
@@ -217,12 +217,12 @@ async fn transcribe_local_with(
     path: &Path,
     deps: &Deps,
 ) -> Result<AnalyzeResult, AvrError> {
-    let duration = deps.tools.probe_duration(ctx, path).await.ok();
+    let duration = deps.tools.probe_duration(ctx, path).await?;
     let key = media_key(
         &MediaSource::LocalFile {
             path: path.to_path_buf(),
         },
-        duration,
+        Some(duration),
     )?;
     let item_cache = item_cache_dir(ctx, &MediaKey::parse(&key)?);
 
@@ -233,11 +233,12 @@ async fn transcribe_local_with(
     let key_run = key.clone();
 
     deps.jobs
-        .run_once(&key, &item_cache, || async move {
+        .run_once(&key, &item_cache, move || async move {
             run_local_pipeline(
                 &ctx_clone,
                 &deps_clone,
                 &path_clone,
+                duration,
                 &item_cache_run,
                 &key_run,
             )
@@ -253,6 +254,7 @@ async fn run_local_pipeline(
     ctx: &PipelineContext,
     deps: &Deps,
     path: &Path,
+    duration: f64,
     item_cache: &Path,
     key: &str,
 ) -> Result<AnalyzeResult, AvrError> {
@@ -262,7 +264,6 @@ async fn run_local_pipeline(
     }
 
     let tools = &deps.tools;
-    let duration = tools.probe_duration(ctx, path).await.unwrap_or(0.0);
     let video = crate::models::VideoInfo {
         id: key.to_string(),
         title: path

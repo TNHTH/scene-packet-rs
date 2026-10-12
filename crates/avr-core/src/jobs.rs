@@ -167,14 +167,7 @@ impl Default for JobManager {
     }
 }
 
-pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), AvrError> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).map_err(io_err)?;
-    let part = path.with_extension("part");
-    fs::write(&part, content).map_err(io_err)?;
-    fs::rename(&part, path).map_err(io_err)?;
-    Ok(())
-}
+pub use crate::storage::atomic_write;
 
 pub fn write_manifest(cache_dir: &Path, manifest: &JobManifest) -> Result<(), AvrError> {
     let path = cache_dir.join("manifest.json");
